@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017
+    depends_on:
+      - mongodb
+    volumes:
+      - .:/app
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_DATABASE=ubo_trace_engine
+
+volumes:
+  mongodb_data:
