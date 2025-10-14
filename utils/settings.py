@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     session_stage_2a: str = ""  # Required - must be set in .env
     session_stage_2b: str = ""  # Required - must be set in .env
     
+    # Apollo.io API settings
+    apollo_api_key: str = "RMTKfIT6vY_y1YBW38x6Kw"  # Apollo API key
+    apollo_base_url: str = "https://api.apollo.io/v1"
+    apollo_timeout: int = 30
+    
     # API settings
     api_timeout: int = 60
     max_retries: int = 3
@@ -78,3 +83,7 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
+
+def get_settings() -> Settings:
+    """Get the global settings instance"""
+    return settings

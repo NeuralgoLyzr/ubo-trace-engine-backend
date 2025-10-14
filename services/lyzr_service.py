@@ -48,97 +48,6 @@ class LyzrAgentService:
             }
         }
     
-    def _build_prompt(self, stage: TraceStage, entity: str, ubo_name: str, location: str, domain: Optional[str] = None) -> str:
-        """Build the appropriate prompt for each stage based on the notebook logic"""
-        
-        if not domain or domain.strip().lower() in ["", "unknown"]:
-            domain = self._infer_domain_from_entity(entity)
-        
-        if stage == TraceStage.STAGE_1A:
-            return f"""
-You are an independent corporate-ownership investigator preparing a verifiable
-evidence report on potential control links between "{ubo_name}" and "{entity}"
-operating in {location}.  Domain context: {domain}.
-
-OBJECTIVE:
-Return *only verified factual information* backed by official or primary sources.
-
-RESEARCH SCOPE:
-•  Company registry entries (e.g., {location} registrar, Companies House, OpenCorporates)
-•  Beneficial-ownership filings, shareholder lists, annual returns, PDFs, or government data
-•  Major business-wire releases (Bloomberg, Reuters, PR Newswire) that cite ownership facts
-•  Audit or financial-statement disclosures that explicitly mention {ubo_name} and {entity}
-
-MANDATORY OUTPUT:
-For each finding, provide:
-  •  Exact Fact (e.g. "Liu Jianfeng holds 30 % of shares in Louis Dreyfus Company Metals MEA DMCC")
-  •  Evidence Type (one of [Registry | Filing | News | Disclosure])
-  •  Date (if available)
-  •  Verified URL (official domain or primary source only)
-
-Rules:
-– No speculation or inference wording ("likely", "appears", etc.)
-– If nothing is found, explicitly state **"No verified connection located in official records."**
-"""
-        
-        elif stage == TraceStage.STAGE_1B:
-            return f"""
-Conduct a *time-scoped factual search (Jan 2023 – present)* for direct relationships between
-"{ubo_name}" and "{entity}" in {location}.  Domain context: {domain}.
-
-Include:
-•  Any new or amended ownership filings, director appointments, or resignations
-•  Updates in government or financial-regulator databases (2023–2025)
-•  Corporate announcements confirming changes in control or shareholding
-
-STRICT REQUIREMENTS:
-Every statement must have → (Date | Fact | Source URL).
-Prefer registry or regulator links > official press releases > news aggregators.
-Ignore speculation, commentary, or analyst opinion.
-Return *only verified evidence* within the past two years.
-"""
-        
-        elif stage == TraceStage.STAGE_2A:
-            return f"""
-Investigate *indirect or layered ownership structures* linking "{ubo_name}" to "{entity}"
-({domain}) registered or operating in {location}.
-
-TRACE ELEMENTS:
-•  Parent / subsidiary / holding relationships
-•  Funds, SPVs, nominee shareholders, or trusts connected to either party
-•  Entities sharing registered address, directors, or auditors
-•  Partial-name or abbreviated-name occurrences (e.g., initials, middle-name variants)
-•  Cross-border vehicles used for control or investment
-
-MANDATORY FORMAT:
-(1) Fact — Relationship type — Jurisdiction — Verified URL
-(2) If none found, output "No verified indirect relationship detected."
-
-SOURCE QUALITY ORDER → Registry > Court / SEC / FCA filing > Audited report > Major press.
-No AI-inferred reasoning; every item must include at least one URL.
-"""
-        
-        elif stage == TraceStage.STAGE_2B:
-            return f"""
-Perform a *time-filtered indirect-connection review (Jan 2023 – present)* between
-"{ubo_name}" and "{entity}" in {location}.  Domain context: {domain}.
-
-Look for:
-•  Acquisitions, restructurings, or control transfers involving related entities
-•  Fund-ownership changes, trust amendments, or partnership filings (2023-2025)
-•  Shared executives or signatories appearing across filings
-•  Corporate-registry updates citing {ubo_name} or a name variant
-
-OUTPUT FORMAT (chronological):
-Date — Evidence Type — Verified Fact — Source URL
-
-Each fact must be verifiable from the URL.
-Exclude rumors, unverified blog posts, or secondary summaries.
-If no data exists, state "None found in official records (2023-2025)."
-"""
-        
-        return ""
-    
     def _infer_domain_from_entity(self, entity: str) -> str:
         """Infer plausible domain name from entity text for context building"""
         words = re.findall(r'[A-Za-z]+', entity)
@@ -159,14 +68,20 @@ If no data exists, state "None found in official records (2023-2025)."
             if not config:
                 raise ValueError(f"Unknown stage: {stage}")
             
-            prompt = self._build_prompt(stage, entity, ubo_name, location, domain)
+            # Build simple message with only required parameters
+            message = f"Entity: {entity}, UBO Name: {ubo_name}, Location: {location}"
+            if domain:
+                message += f", Domain: {domain}"
             
             request_data = LyzrAgentRequest(
                 user_id=self.user_id,
                 agent_id=config["agent_id"],
                 session_id=config["session_id"],
-                message=prompt
+                message=message
             )
+            
+            logger.info(f"Sending request to Lyzr agent {stage}: {config['agent_id']}")
+            logger.info(f"Message: {message}")
             
             headers = {
                 "Content-Type": "application/json",
@@ -182,15 +97,57 @@ If no data exists, state "None found in official records (2023-2025)."
                 response.raise_for_status()
                 
                 result = response.json()
-                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                logger.info(f"Full response structure: {list(result.keys())}")
+                
+                # Try different response formats
+                content = result.get("response", "")
+                if not content:
+                    # Fallback to OpenAI-style format
+                    content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if not content:
+                    # Try direct content field
+                    content = result.get("content", "")
+                
+                # Try to parse JSON response to extract facts and summary
+                facts = []
+                summary = None
+                
+                try:
+                    import json
+                    parsed_json = json.loads(content)
+                    if isinstance(parsed_json, dict) and "facts" in parsed_json:
+                        # Extract structured facts
+                        facts_data = parsed_json.get("facts", [])
+                        for fact_item in facts_data:
+                            if isinstance(fact_item, dict) and "fact" in fact_item and "url" in fact_item:
+                                facts.append({
+                                    "fact": fact_item["fact"],
+                                    "url": fact_item["url"]
+                                })
+                        
+                        # Extract summary
+                        summary = parsed_json.get("summary", "")
+                        
+                        logger.info(f"Extracted {len(facts)} facts and summary from JSON response")
+                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                    logger.warning(f"Could not parse JSON response: {str(e)}")
+                    facts = []
+                    summary = None
                 
                 processing_time = int((time.time() - start_time) * 1000)
                 
                 logger.info(f"Lyzr agent {stage} completed in {processing_time}ms")
+                logger.info(f"Response content length: {len(content)} chars")
+                if content:
+                    logger.info(f"Response preview: {content[:200]}...")
+                else:
+                    logger.warning(f"Empty response from Lyzr agent {stage}")
                 
                 return LyzrAgentResponse(
                     success=True,
                     content=content,
+                    facts=facts,
+                    summary=summary,
                     processing_time_ms=processing_time
                 )
                 
@@ -211,6 +168,45 @@ If no data exists, state "None found in official records (2023-2025)."
         direct, indirect = [], []
         name_variants = self._partial_name_patterns(ubo_name)
         
+        # Try to parse JSON response first (for Stage 1A, 1B, 2A, and 2B structured format)
+        try:
+            import json
+            parsed_json = json.loads(content)
+            if isinstance(parsed_json, dict) and "facts" in parsed_json:
+                # Handle structured response format
+                facts = parsed_json.get("facts", [])
+                for fact_item in facts:
+                    if isinstance(fact_item, dict):
+                        fact_text = fact_item.get("fact", "")
+                        fact_url = fact_item.get("url", "")
+                        
+                        if fact_text and fact_url:
+                            # All stages now use the same format: "Fact — URL"
+                            formatted_fact = f"{fact_text} — {fact_url}"
+                            
+                            # Determine if this is direct or indirect evidence based on content
+                            fact_lower = fact_text.lower()
+                            if any(keyword in fact_lower for keyword in ["subsidiary", "holding", "fund", "trust", "affiliate", "through", "owned by", "via"]):
+                                indirect.append(formatted_fact)
+                            else:
+                                direct.append(formatted_fact)
+                            
+                            # Add URL to URLs list
+                            if fact_url not in urls:
+                                urls.append(fact_url)
+                
+                return {
+                    "direct": direct,
+                    "indirect": indirect,
+                    "urls": urls,
+                    "has_direct": bool(direct),
+                    "has_indirect": bool(indirect),
+                }
+        except (json.JSONDecodeError, KeyError):
+            # Fall back to text parsing if JSON parsing fails
+            pass
+        
+        # Original text parsing logic
         sentences = re.split(r'(?<=[\.\n])\s+', content)
         
         for sentence in sentences:

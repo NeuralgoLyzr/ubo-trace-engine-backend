@@ -1,11 +1,13 @@
 # UBO Trace Engine Backend
 
-A comprehensive backend system for Ultimate Beneficial Owner (UBO) tracing using AI agents. This system implements a 4-stage tracing process to identify direct and indirect ownership connections between entities and beneficial owners.
+A comprehensive backend system for Ultimate Beneficial Owner (UBO) tracing using Lyzr AI agents. This system implements a 4-stage tracing process to identify direct and indirect ownership connections between entities and beneficial owners with verified factual evidence.
 
 ## 🚀 Features
 
 - **4-Stage AI Tracing**: Direct and indirect evidence collection with time-filtered searches
 - **Lyzr AI Integration**: Seamless integration with Lyzr AI agents for each tracing stage
+- **Simplified Parameters**: Only requires entity, UBO name, location, and optional domain
+- **Verified Sources**: All findings include verified URLs and source citations
 - **RESTful API**: Complete REST API for trace management and results retrieval
 - **MongoDB Storage**: Persistent storage for traces and results
 - **Batch Processing**: Support for processing multiple traces concurrently
@@ -24,8 +26,8 @@ The system follows a modular architecture with clear separation of concerns:
 ├── models/
 │   └── schemas.py         # Pydantic data models
 ├── services/
-│   ├── lyzr_service.py    # Lyzr AI agent integration
-│   └── ubo_trace_service.py # Core UBO tracing logic
+│   ├── lyzr_service.py        # Lyzr AI agent integration
+│   └── ubo_trace_service.py   # Core UBO tracing logic
 ├── utils/
 │   ├── settings.py        # Configuration management
 │   └── database.py        # MongoDB connection and utilities
@@ -224,22 +226,22 @@ curl -X POST "http://localhost:8000/api/v1/trace/batch" \
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `MONGODB_URL` | MongoDB connection string | `mongodb://localhost:27017` |
-| `DATABASE_NAME` | Database name | `ubo_trace_engine` |
-| `LYZR_API_KEY` | Lyzr AI API key | Required |
-| `API_TIMEOUT` | API request timeout (seconds) | `60` |
-| `RATE_LIMIT_PER_MINUTE` | Rate limit for API calls | `10` |
-
-### Lyzr AI Agent Configuration
-
-The system uses 4 different Lyzr AI agents for different stages:
-
-- **Stage 1A**: `68e8dd6c3e9645375cfcfd86` - Direct Evidence (General)
-- **Stage 1B**: `68ec33428be660f19f91cf3e` - Direct Evidence (Time-filtered)
-- **Stage 2A**: `68ec3536de8385f5b4326896` - Indirect Evidence (General)
-- **Stage 2B**: `68ec36368d106b3b3abba21b` - Indirect Evidence (Time-filtered)
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `MONGODB_URL` | MongoDB connection string | `mongodb://localhost:27017` | Yes |
+| `DATABASE_NAME` | Database name | `ubo_trace_engine` | No |
+| `LYZR_API_KEY` | Lyzr AI API key | - | Yes |
+| `LYZR_USER_ID` | Lyzr user ID | - | Yes |
+| `AGENT_STAGE_1A` | Agent ID for Stage 1A | - | Yes |
+| `AGENT_STAGE_1B` | Agent ID for Stage 1B | - | Yes |
+| `AGENT_STAGE_2A` | Agent ID for Stage 2A | - | Yes |
+| `AGENT_STAGE_2B` | Agent ID for Stage 2B | - | Yes |
+| `SESSION_STAGE_1A` | Session ID for Stage 1A | - | Yes |
+| `SESSION_STAGE_1B` | Session ID for Stage 1B | - | Yes |
+| `SESSION_STAGE_2A` | Session ID for Stage 2A | - | Yes |
+| `SESSION_STAGE_2B` | Session ID for Stage 2B | - | Yes |
+| `API_TIMEOUT` | API request timeout (seconds) | `60` | No |
+| `RATE_LIMIT_PER_MINUTE` | Rate limit for API calls | `10` | No |
 
 ## 📈 Monitoring & Logging
 
@@ -296,8 +298,8 @@ ubo-trace-engine-backend/
 ### Testing
 
 ```bash
-# Run tests (when implemented)
-pytest
+# Test Lyzr integration
+python test_perplexity_integration.py
 
 # Test specific endpoint
 curl -X GET "http://localhost:8000/api/v1/health"
@@ -313,9 +315,9 @@ curl -X GET "http://localhost:8000/api/v1/health"
    - Verify network connectivity
 
 2. **Lyzr API Errors**
-   - Verify API key is correct
+   - Verify API key and user ID are correct
    - Check agent IDs and session IDs
-   - Monitor rate limits
+   - Monitor API rate limits
 
 3. **Trace Execution Failed**
    - Check logs for specific error messages

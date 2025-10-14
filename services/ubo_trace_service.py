@@ -12,6 +12,7 @@ from models.schemas import (
     TraceStatus, TraceStage, BatchTraceRequest, BatchTraceResponse
 )
 from services.lyzr_service import LyzrAgentService
+from services.apollo_service import ApolloService
 from utils.database import get_database
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ class UBOTraceService:
     
     def __init__(self):
         self.lyzr_service = LyzrAgentService()
+        self.apollo_service = ApolloService()
         self._db = None
     
     @property
@@ -55,11 +57,20 @@ class UBOTraceService:
         if not trace:
             raise ValueError(f"Trace not found: {trace_id}")
         
-        # Update status to in progress
+        # Update status to in progress and clear previous results
         await self.db.ubo_traces.update_one(
             {"trace_id": trace_id},
-            {"$set": {"status": TraceStatus.IN_PROGRESS, "updated_at": datetime.utcnow()}}
+            {
+                "$set": {
+                    "status": TraceStatus.IN_PROGRESS, 
+                    "stages_completed": [],
+                    "updated_at": datetime.utcnow()
+                }
+            }
         )
+        
+        # Clear previous stage results for this trace
+        await self.db.trace_results.delete_many({"trace_id": trace_id})
         
         start_time = datetime.utcnow()
         stage_results = []
@@ -144,7 +155,7 @@ class UBOTraceService:
             status=TraceStatus.IN_PROGRESS,
             agent_id=config["agent_id"],
             session_id=config["session_id"],
-            request_message=self.lyzr_service._build_prompt(stage, entity, ubo_name, location, domain)
+            request_message=f"Entity: {entity}, UBO: {ubo_name}, Location: {location}, Domain: {domain or 'N/A'}"
         )
         
         try:
@@ -155,7 +166,31 @@ class UBOTraceService:
                 stage_result.response_content = response.content
                 stage_result.processing_time_ms = response.processing_time_ms
                 
-                # Parse results
+                # Set structured facts and summary from Lyzr response
+                stage_result.facts = response.facts
+                stage_result.summary = response.summary
+                
+                # Add Apollo enrichment data
+                try:
+                    logger.info(f"Starting Apollo enrichment for stage {stage}")
+                    apollo_enrichment = await self.apollo_service.enrich_ubo_trace_data(
+                        entity, ubo_name, location, domain
+                    )
+                    stage_result.apollo_enrichment = apollo_enrichment
+                    
+                    # Extract insights from Apollo data
+                    apollo_insights = self.apollo_service.extract_key_insights(apollo_enrichment)
+                    stage_result.apollo_insights = apollo_insights
+                    
+                    logger.info(f"Apollo enrichment completed for stage {stage}")
+                    logger.info(f"Apollo insights: {apollo_insights.get('overall_confidence', 0)}% confidence")
+                    
+                except Exception as apollo_error:
+                    logger.warning(f"Apollo enrichment failed for stage {stage}: {str(apollo_error)}")
+                    stage_result.apollo_enrichment = {"error": str(apollo_error)}
+                    stage_result.apollo_insights = {"error": str(apollo_error)}
+                
+                # Parse results for backward compatibility
                 parsed_results = self.lyzr_service.parse_results(response.content, ubo_name)
                 stage_result.parsed_results = parsed_results
                 stage_result.urls_found = parsed_results["urls"]
@@ -273,30 +308,22 @@ class UBOTraceService:
         
         batch_response = BatchTraceResponse(
             total_traces=len(request.traces),
+            completed_traces=0,
+            failed_traces=0,
             trace_ids=[]
         )
         
-        # Create all traces first
+        # Create all traces (batch only creates, does not execute)
         for trace_request in request.traces:
-            trace_response = await self.create_trace(trace_request)
-            batch_response.trace_ids.append(trace_response.trace_id)
+            try:
+                trace_response = await self.create_trace(trace_request)
+                batch_response.trace_ids.append(trace_response.trace_id)
+                batch_response.completed_traces += 1
+            except Exception as e:
+                batch_response.failed_traces += 1
+                logger.error(f"Failed to create trace: {str(e)}")
         
-        # Execute traces with concurrency limit
-        semaphore = asyncio.Semaphore(request.max_concurrent or 3)
-        
-        async def execute_single_trace(trace_id: str):
-            async with semaphore:
-                try:
-                    await self.execute_trace(trace_id)
-                    batch_response.completed_traces += 1
-                except Exception as e:
-                    batch_response.failed_traces += 1
-                    logger.error(f"Batch trace {trace_id} failed: {str(e)}")
-        
-        # Execute all traces concurrently
-        await asyncio.gather(*[execute_single_trace(trace_id) for trace_id in batch_response.trace_ids])
-        
-        # Update batch status
+        # Update batch status based on creation results
         if batch_response.completed_traces == batch_response.total_traces:
             batch_response.status = TraceStatus.COMPLETED
         elif batch_response.completed_traces > 0:

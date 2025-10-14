@@ -59,6 +59,11 @@ class UBOTraceResponse(BaseModel):
         arbitrary_types_allowed = True
         json_encoders = {ObjectId: str}
 
+class FactItem(BaseModel):
+    """Individual fact with URL"""
+    fact: str
+    url: str
+
 class TraceStageResult(BaseModel):
     """Result model for individual trace stage"""
     id: Optional[str] = Field(default=None, alias="_id")
@@ -70,6 +75,10 @@ class TraceStageResult(BaseModel):
     request_message: str
     response_content: Optional[str] = None
     parsed_results: Optional[Dict[str, Any]] = None
+    facts: List[FactItem] = Field(default_factory=list)  # Structured facts from Lyzr response
+    summary: Optional[str] = None  # Summary from Lyzr response
+    apollo_enrichment: Optional[Dict[str, Any]] = None  # Apollo.io enrichment data
+    apollo_insights: Optional[Dict[str, Any]] = None  # Apollo.io insights and verification
     urls_found: List[str] = Field(default_factory=list)
     direct_connections: List[str] = Field(default_factory=list)
     indirect_connections: List[str] = Field(default_factory=list)
@@ -113,10 +122,19 @@ class LyzrAgentRequest(BaseModel):
     session_id: str
     message: str
 
+class PerplexityResponse(BaseModel):
+    """Response model from Perplexity AI API"""
+    success: bool
+    content: Optional[str] = None
+    error: Optional[str] = None
+    processing_time_ms: Optional[int] = None
+
 class LyzrAgentResponse(BaseModel):
     """Response model from Lyzr AI agent"""
     success: bool
     content: Optional[str] = None
+    facts: List[FactItem] = Field(default_factory=list)  # Structured facts from JSON response
+    summary: Optional[str] = None  # Summary from JSON response
     error: Optional[str] = None
     processing_time_ms: Optional[int] = None
 
