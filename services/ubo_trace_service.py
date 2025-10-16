@@ -138,79 +138,120 @@ class UBOTraceService:
             
             raise
     
+    def _has_zero_results(self, stage_result: TraceStageResult) -> bool:
+        """Check if a stage result has zero findings"""
+        if not stage_result.parsed_results:
+            return True
+        
+        direct_count = len(stage_result.parsed_results.get("direct", []))
+        indirect_count = len(stage_result.parsed_results.get("indirect", []))
+        urls_count = len(stage_result.parsed_results.get("urls", []))
+        
+        # Consider it zero results if no direct connections, no indirect connections, and no URLs
+        return direct_count == 0 and indirect_count == 0 and urls_count == 0
+
     async def _execute_stage(self, trace_id: str, stage: TraceStage, entity: str, 
                            ubo_name: str, location: str, domain: Optional[str] = None) -> TraceStageResult:
-        """Execute a single stage of the UBO trace"""
+        """Execute a single stage of the UBO trace with retry logic for zero results"""
         
         start_time = datetime.utcnow()
+        max_retries = 3
+        retry_delay = 5  # seconds
         
         # Get agent configuration
         config = self.lyzr_service.agent_configs.get(stage)
         if not config:
             raise ValueError(f"Unknown stage: {stage}")
         
-        stage_result = TraceStageResult(
-            trace_id=trace_id,
-            stage=stage,
-            status=TraceStatus.IN_PROGRESS,
-            agent_id=config["agent_id"],
-            session_id=config["session_id"],
-            request_message=f"Entity: {entity}, UBO: {ubo_name}, Location: {location}, Domain: {domain or 'N/A'}"
-        )
-        
-        try:
-            # Call Lyzr agent
-            response = await self.lyzr_service.call_agent(stage, entity, ubo_name, location, domain)
+        for attempt in range(max_retries + 1):  # 0, 1, 2, 3 (total 4 attempts)
+            is_retry = attempt > 0
             
-            if response.success:
-                stage_result.response_content = response.content
-                stage_result.processing_time_ms = response.processing_time_ms
+            stage_result = TraceStageResult(
+                trace_id=trace_id,
+                stage=stage,
+                status=TraceStatus.IN_PROGRESS,
+                agent_id=config["agent_id"],
+                session_id=config["session_id"],
+                request_message=f"Entity: {entity}, UBO: {ubo_name}, Location: {location}, Domain: {domain or 'N/A'}"
+            )
+            
+            try:
+                if is_retry:
+                    logger.info(f"Retry attempt {attempt} for stage {stage} (trace {trace_id})")
                 
-                # Set structured facts and summary from Lyzr response
-                stage_result.facts = response.facts
-                stage_result.summary = response.summary
+                # Call Lyzr agent
+                response = await self.lyzr_service.call_agent(stage, entity, ubo_name, location, domain)
                 
-                # Add Apollo enrichment data
-                try:
-                    logger.info(f"Starting Apollo enrichment for stage {stage}")
-                    apollo_enrichment = await self.apollo_service.enrich_ubo_trace_data(
-                        entity, ubo_name, location, domain
-                    )
-                    stage_result.apollo_enrichment = apollo_enrichment
+                if response.success:
+                    stage_result.response_content = response.content
+                    stage_result.processing_time_ms = response.processing_time_ms
                     
-                    # Extract insights from Apollo data
-                    apollo_insights = self.apollo_service.extract_key_insights(apollo_enrichment)
-                    stage_result.apollo_insights = apollo_insights
+                    # Set structured facts and summary from Lyzr response
+                    stage_result.facts = response.facts
+                    stage_result.summary = response.summary
                     
-                    logger.info(f"Apollo enrichment completed for stage {stage}")
-                    logger.info(f"Apollo insights: {apollo_insights.get('overall_confidence', 0)}% confidence")
+                    # Add Apollo enrichment data
+                    try:
+                        logger.info(f"Starting Apollo enrichment for stage {stage}")
+                        apollo_enrichment = await self.apollo_service.enrich_ubo_trace_data(
+                            entity, ubo_name, location, domain
+                        )
+                        stage_result.apollo_enrichment = apollo_enrichment
+                        
+                        # Extract insights from Apollo data
+                        apollo_insights = self.apollo_service.extract_key_insights(apollo_enrichment)
+                        stage_result.apollo_insights = apollo_insights
+                        
+                        logger.info(f"Apollo enrichment completed for stage {stage}")
+                        logger.info(f"Apollo insights: {apollo_insights.get('overall_confidence', 0)}% confidence")
+                        
+                    except Exception as apollo_error:
+                        logger.warning(f"Apollo enrichment failed for stage {stage}: {str(apollo_error)}")
+                        stage_result.apollo_enrichment = {"error": str(apollo_error)}
+                        stage_result.apollo_insights = {"error": str(apollo_error)}
                     
-                except Exception as apollo_error:
-                    logger.warning(f"Apollo enrichment failed for stage {stage}: {str(apollo_error)}")
-                    stage_result.apollo_enrichment = {"error": str(apollo_error)}
-                    stage_result.apollo_insights = {"error": str(apollo_error)}
+                    # Parse results for backward compatibility
+                    parsed_results = self.lyzr_service.parse_results(response.content, ubo_name)
+                    stage_result.parsed_results = parsed_results
+                    stage_result.urls_found = parsed_results["urls"]
+                    stage_result.direct_connections = parsed_results["direct"]
+                    stage_result.indirect_connections = parsed_results["indirect"]
+                    stage_result.has_direct = parsed_results["has_direct"]
+                    stage_result.has_indirect = parsed_results["has_indirect"]
+                    stage_result.status = TraceStatus.COMPLETED
+                    
+                    # Check if we have zero results and should retry
+                    if self._has_zero_results(stage_result) and attempt < max_retries:
+                        logger.warning(f"Stage {stage} returned zero results (attempt {attempt + 1}/{max_retries + 1}). Retrying in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        # Either we have results or we've exhausted retries
+                        if self._has_zero_results(stage_result):
+                            logger.warning(f"Stage {stage} still has zero results after {max_retries + 1} attempts")
+                        else:
+                            logger.info(f"Stage {stage} completed successfully with results")
+                        break
+                    
+                else:
+                    stage_result.error_message = response.error
+                    stage_result.status = TraceStatus.FAILED
+                    break
                 
-                # Parse results for backward compatibility
-                parsed_results = self.lyzr_service.parse_results(response.content, ubo_name)
-                stage_result.parsed_results = parsed_results
-                stage_result.urls_found = parsed_results["urls"]
-                stage_result.direct_connections = parsed_results["direct"]
-                stage_result.indirect_connections = parsed_results["indirect"]
-                stage_result.has_direct = parsed_results["has_direct"]
-                stage_result.has_indirect = parsed_results["has_indirect"]
-                stage_result.status = TraceStatus.COMPLETED
-                
-            else:
-                stage_result.error_message = response.error
+            except Exception as e:
+                stage_result.error_message = str(e)
                 stage_result.status = TraceStatus.FAILED
+                logger.error(f"Stage {stage} failed for trace {trace_id} (attempt {attempt + 1}): {str(e)}")
+                
+                # If this is not the last attempt, wait before retrying
+                if attempt < max_retries:
+                    logger.info(f"Retrying stage {stage} in {retry_delay} seconds due to error...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    break
             
             stage_result.completed_at = datetime.utcnow()
-            
-        except Exception as e:
-            stage_result.error_message = str(e)
-            stage_result.status = TraceStatus.FAILED
-            stage_result.completed_at = datetime.utcnow()
-            logger.error(f"Stage {stage} failed for trace {trace_id}: {str(e)}")
         
         return stage_result
     

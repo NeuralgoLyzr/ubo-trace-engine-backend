@@ -6,6 +6,7 @@ import httpx
 import time
 import re
 import json
+import asyncio
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import logging
@@ -247,90 +248,135 @@ class LyzrAgentService:
         text_lower = text.lower()
         return any(pattern in text_lower for pattern in patterns)
     
+    def _has_zero_domain_results(self, response: CompanyDomainAnalysisResponse) -> bool:
+        """Check if domain analysis response has zero findings"""
+        if not response.success:
+            return True
+        
+        return len(response.companies) == 0
+    
     async def analyze_company_domains(self, company_name: str, ubo_name: str, address: str) -> CompanyDomainAnalysisResponse:
-        """Analyze company domains using the specialized Lyzr agent"""
+        """Analyze company domains using the specialized Lyzr agent with retry logic for zero results"""
         
         start_time = time.time()
+        max_retries = 5
+        retry_delay = 5  # seconds
         
-        try:
-            # Build message in the format expected by the agent
-            message = f"company_name : {company_name} , UBO_name: {ubo_name} , address: {address}"
+        for attempt in range(max_retries + 1):  # 0, 1, 2, 3, 4, 5 (total 6 attempts)
+            is_retry = attempt > 0
             
-            request_data = LyzrAgentRequest(
-                user_id=self.user_id,
-                agent_id=settings.agent_company_domain,
-                session_id=settings.session_company_domain,
-                message=message
-            )
-            
-            logger.info(f"Sending company domain analysis request")
-            logger.info(f"Message: {message}")
-            
-            headers = {
-                "Content-Type": "application/json",
-                "x-api-key": self.api_key
-            }
-            
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    self.api_url,
-                    headers=headers,
-                    json=request_data.dict()
+            try:
+                if is_retry:
+                    logger.info(f"Retry attempt {attempt} for domain analysis (company: {company_name})")
+                
+                # Build message in the format expected by the agent
+                message = f"company_name : {company_name} , UBO_name: {ubo_name} , address: {address}"
+                
+                request_data = LyzrAgentRequest(
+                    user_id=self.user_id,
+                    agent_id=settings.agent_company_domain,
+                    session_id=settings.session_company_domain,
+                    message=message
                 )
-                response.raise_for_status()
                 
-                result = response.json()
-                logger.info(f"Company domain analysis response structure: {list(result.keys())}")
+                logger.info(f"Sending company domain analysis request")
+                logger.info(f"Message: {message}")
                 
-                # Extract content from response
-                content = result.get("response", "")
-                if not content:
-                    content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if not content:
-                    content = result.get("content", "")
+                headers = {
+                    "Content-Type": "application/json",
+                    "x-api-key": self.api_key
+                }
                 
-                # Parse the JSON response to extract companies
-                companies = []
-                try:
-                    parsed_json = json.loads(content)
-                    if isinstance(parsed_json, dict) and "companies" in parsed_json:
-                        companies_data = parsed_json.get("companies", [])
-                        for company_data in companies_data:
-                            if isinstance(company_data, dict):
-                                company = CompanyDomain(
-                                    rank=company_data.get("rank", 0),
-                                    domain=company_data.get("domain", ""),
-                                    short_summary=company_data.get("short_summary", ""),
-                                    relation=company_data.get("relation", "")
-                                )
-                                companies.append(company)
-                        
-                        logger.info(f"Successfully parsed {len(companies)} company domains")
-                    else:
-                        logger.warning(f"Unexpected response format: {parsed_json}")
-                        
-                except (json.JSONDecodeError, KeyError, TypeError) as e:
-                    logger.error(f"Failed to parse company domain response: {str(e)}")
-                    logger.error(f"Raw content: {content}")
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(
+                        self.api_url,
+                        headers=headers,
+                        json=request_data.dict()
+                    )
+                    response.raise_for_status()
+                    
+                    result = response.json()
+                    logger.info(f"Company domain analysis response structure: {list(result.keys())}")
+                    
+                    # Extract content from response
+                    content = result.get("response", "")
+                    if not content:
+                        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    if not content:
+                        content = result.get("content", "")
+                    
+                    # Parse the JSON response to extract companies
                     companies = []
+                    try:
+                        parsed_json = json.loads(content)
+                        if isinstance(parsed_json, dict) and "companies" in parsed_json:
+                            companies_data = parsed_json.get("companies", [])
+                            for company_data in companies_data:
+                                if isinstance(company_data, dict):
+                                    company = CompanyDomain(
+                                        rank=company_data.get("rank", 0),
+                                        domain=company_data.get("domain", ""),
+                                        short_summary=company_data.get("short_summary", ""),
+                                        relation=company_data.get("relation", "")
+                                    )
+                                    companies.append(company)
+                            
+                            logger.info(f"Successfully parsed {len(companies)} company domains")
+                        else:
+                            logger.warning(f"Unexpected response format: {parsed_json}")
+                            
+                    except (json.JSONDecodeError, KeyError, TypeError) as e:
+                        logger.error(f"Failed to parse company domain response: {str(e)}")
+                        logger.error(f"Raw content: {content}")
+                        companies = []
+                    
+                    processing_time = int((time.time() - start_time) * 1000)
+                    
+                    # Create response object
+                    domain_response = CompanyDomainAnalysisResponse(
+                        success=True,
+                        companies=companies,
+                        processing_time_ms=processing_time
+                    )
+                    
+                    # Check if we have zero results and should retry
+                    if self._has_zero_domain_results(domain_response) and attempt < max_retries:
+                        logger.warning(f"Domain analysis returned zero results (attempt {attempt + 1}/{max_retries + 1}). Retrying in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        # Either we have results or we've exhausted retries
+                        if self._has_zero_domain_results(domain_response):
+                            logger.warning(f"Domain analysis still has zero results after {max_retries + 1} attempts")
+                        else:
+                            logger.info(f"Domain analysis completed successfully with {len(companies)} companies found")
+                        
+                        logger.info(f"Company domain analysis completed in {processing_time}ms")
+                        logger.info(f"Found {len(companies)} company domains")
+                        
+                        return domain_response
                 
+            except Exception as e:
                 processing_time = int((time.time() - start_time) * 1000)
+                logger.error(f"Domain analysis failed (attempt {attempt + 1}): {str(e)}")
                 
-                logger.info(f"Company domain analysis completed in {processing_time}ms")
-                logger.info(f"Found {len(companies)} company domains")
-                
-                return CompanyDomainAnalysisResponse(
-                    success=True,
-                    companies=companies,
-                    processing_time_ms=processing_time
-                )
-                
-        except Exception as e:
-            processing_time = int((time.time() - start_time) * 1000)
-            logger.error(f"Company domain analysis failed: {str(e)}")
-            
-            return CompanyDomainAnalysisResponse(
-                success=False,
-                error=str(e),
-                processing_time_ms=processing_time
-            )
+                # If this is not the last attempt, wait before retrying
+                if attempt < max_retries:
+                    logger.info(f"Retrying domain analysis in {retry_delay} seconds due to error...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    # Final attempt failed
+                    return CompanyDomainAnalysisResponse(
+                        success=False,
+                        error=str(e),
+                        processing_time_ms=processing_time
+                    )
+        
+        # This should never be reached, but just in case
+        processing_time = int((time.time() - start_time) * 1000)
+        return CompanyDomainAnalysisResponse(
+            success=False,
+            error="Unexpected error in retry loop",
+            processing_time_ms=processing_time
+        )
