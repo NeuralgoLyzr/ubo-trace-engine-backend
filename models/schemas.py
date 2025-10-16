@@ -153,6 +153,27 @@ class BatchTraceResponse(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     status: TraceStatus = TraceStatus.PENDING
 
+class CompanyDomainAnalysisRequest(BaseModel):
+    """Request model for company domain analysis"""
+    company_name: str = Field(..., description="Company name to analyze")
+    ubo_name: str = Field(..., description="Ultimate Beneficial Owner name")
+    address: str = Field(..., description="Company address")
+
+class CompanyDomain(BaseModel):
+    """Individual company domain result"""
+    rank: int = Field(..., description="Ranking of the domain")
+    domain: str = Field(..., description="Domain name")
+    short_summary: str = Field(..., description="Short summary of the domain")
+    relation: str = Field(..., description="Relation to the company")
+
+class CompanyDomainAnalysisResponse(BaseModel):
+    """Response model for company domain analysis"""
+    success: bool
+    companies: List[CompanyDomain] = Field(default_factory=list)
+    error: Optional[str] = None
+    processing_time_ms: Optional[int] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
 class HealthCheck(BaseModel):
     """Health check response model"""
     status: str

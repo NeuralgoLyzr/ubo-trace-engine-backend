@@ -8,7 +8,8 @@ import logging
 
 from models.schemas import (
     UBOTraceRequest, UBOTraceResponse, TraceSummary, TraceStageResult,
-    BatchTraceRequest, BatchTraceResponse, HealthCheck
+    BatchTraceRequest, BatchTraceResponse, HealthCheck,
+    CompanyDomainAnalysisRequest, CompanyDomainAnalysisResponse
 )
 from services.ubo_trace_service import UBOTraceService
 from utils.database import get_database
@@ -184,6 +185,26 @@ async def delete_trace(trace_id: str):
         raise
     except Exception as e:
         logger.error(f"Failed to delete trace {trace_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/analyze-company-domains", response_model=CompanyDomainAnalysisResponse)
+async def analyze_company_domains(request: CompanyDomainAnalysisRequest):
+    """Analyze company domains using Lyzr AI agent"""
+    try:
+        from services.lyzr_service import LyzrAgentService
+        lyzr_service = LyzrAgentService()
+        
+        result = await lyzr_service.analyze_company_domains(
+            company_name=request.company_name,
+            ubo_name=request.ubo_name,
+            address=request.address
+        )
+        
+        logger.info(f"Company domain analysis completed for {request.company_name}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to analyze company domains: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/health", response_model=HealthCheck)

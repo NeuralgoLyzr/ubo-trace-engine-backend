@@ -221,7 +221,7 @@ class UBOTraceService:
         # Get trace details
         trace = await self.db.ubo_traces.find_one({"trace_id": trace_id})
         
-        # Aggregate results
+        # Aggregate resultsk
         all_direct = []
         all_indirect = []
         all_urls = []

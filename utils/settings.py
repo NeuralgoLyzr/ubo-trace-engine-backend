@@ -33,8 +33,12 @@ class Settings(BaseSettings):
     session_stage_2a: str = ""  # Required - must be set in .env
     session_stage_2b: str = ""  # Required - must be set in .env
     
+    # Company Domain Analysis Agent
+    agent_company_domain: str = ""  # Required - must be set in .env
+    session_company_domain: str = ""  # Required - must be set in .env
+    
     # Apollo.io API settings
-    apollo_api_key: str = "RMTKfIT6vY_y1YBW38x6Kw"  # Apollo API key
+    apollo_api_key: str = ""  # Required - must be set in .env
     apollo_base_url: str = "https://api.apollo.io/v1"
     apollo_timeout: int = 30
     
@@ -67,7 +71,10 @@ class Settings(BaseSettings):
             'session_stage_1a',
             'session_stage_1b',
             'session_stage_2a',
-            'session_stage_2b'
+            'session_stage_2b',
+            'agent_company_domain',
+            'session_company_domain',
+            'apollo_api_key'
         ]
         
         missing_fields = []

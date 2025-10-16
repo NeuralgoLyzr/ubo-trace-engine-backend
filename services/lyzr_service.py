@@ -11,7 +11,10 @@ from datetime import datetime
 import logging
 
 from utils.settings import settings
-from models.schemas import LyzrAgentRequest, LyzrAgentResponse, TraceStage, TraceStageResult
+from models.schemas import (
+    LyzrAgentRequest, LyzrAgentResponse, TraceStage, TraceStageResult,
+    CompanyDomainAnalysisRequest, CompanyDomainAnalysisResponse, CompanyDomain
+)
 
 logger = logging.getLogger(__name__)
 
@@ -243,3 +246,91 @@ class LyzrAgentService:
         """Check if any pattern is mentioned in the text"""
         text_lower = text.lower()
         return any(pattern in text_lower for pattern in patterns)
+    
+    async def analyze_company_domains(self, company_name: str, ubo_name: str, address: str) -> CompanyDomainAnalysisResponse:
+        """Analyze company domains using the specialized Lyzr agent"""
+        
+        start_time = time.time()
+        
+        try:
+            # Build message in the format expected by the agent
+            message = f"company_name : {company_name} , UBO_name: {ubo_name} , address: {address}"
+            
+            request_data = LyzrAgentRequest(
+                user_id=self.user_id,
+                agent_id=settings.agent_company_domain,
+                session_id=settings.session_company_domain,
+                message=message
+            )
+            
+            logger.info(f"Sending company domain analysis request")
+            logger.info(f"Message: {message}")
+            
+            headers = {
+                "Content-Type": "application/json",
+                "x-api-key": self.api_key
+            }
+            
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self.api_url,
+                    headers=headers,
+                    json=request_data.dict()
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                logger.info(f"Company domain analysis response structure: {list(result.keys())}")
+                
+                # Extract content from response
+                content = result.get("response", "")
+                if not content:
+                    content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if not content:
+                    content = result.get("content", "")
+                
+                # Parse the JSON response to extract companies
+                companies = []
+                try:
+                    parsed_json = json.loads(content)
+                    if isinstance(parsed_json, dict) and "companies" in parsed_json:
+                        companies_data = parsed_json.get("companies", [])
+                        for company_data in companies_data:
+                            if isinstance(company_data, dict):
+                                company = CompanyDomain(
+                                    rank=company_data.get("rank", 0),
+                                    domain=company_data.get("domain", ""),
+                                    short_summary=company_data.get("short_summary", ""),
+                                    relation=company_data.get("relation", "")
+                                )
+                                companies.append(company)
+                        
+                        logger.info(f"Successfully parsed {len(companies)} company domains")
+                    else:
+                        logger.warning(f"Unexpected response format: {parsed_json}")
+                        
+                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                    logger.error(f"Failed to parse company domain response: {str(e)}")
+                    logger.error(f"Raw content: {content}")
+                    companies = []
+                
+                processing_time = int((time.time() - start_time) * 1000)
+                
+                logger.info(f"Company domain analysis completed in {processing_time}ms")
+                logger.info(f"Found {len(companies)} company domains")
+                
+                return CompanyDomainAnalysisResponse(
+                    success=True,
+                    companies=companies,
+                    processing_time_ms=processing_time
+                )
+                
+        except Exception as e:
+            processing_time = int((time.time() - start_time) * 1000)
+            logger.error(f"Company domain analysis failed: {str(e)}")
+            
+            return CompanyDomainAnalysisResponse(
+                success=False,
+                error=str(e),
+                processing_time_ms=processing_time
+            )
