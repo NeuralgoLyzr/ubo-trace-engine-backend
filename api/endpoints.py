@@ -207,6 +207,36 @@ async def analyze_company_domains(request: CompanyDomainAnalysisRequest):
         logger.error(f"Failed to analyze company domains: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/domain-analysis")
+async def analyze_domains_with_expert(
+    company_name: str,
+    ubo_name: str,
+    location: str
+):
+    """Analyze domains using Expert AI agent and return confidence scores and rankings"""
+    try:
+        from services.searchapi_service import SearchAPIService
+        
+        searchapi_service = SearchAPIService()
+        
+        logger.info(f"Starting domain analysis for: {company_name} - {ubo_name} - {location}")
+        
+        # Call the domain analysis method
+        result = await searchapi_service.analyze_domains_for_api(
+            company_name, ubo_name, location
+        )
+        
+        if result.get("success"):
+            logger.info(f"Domain analysis completed: {len(result.get('results', []))} domains analyzed")
+            return result
+        else:
+            logger.error(f"Domain analysis failed: {result.get('error', 'Unknown error')}")
+            raise HTTPException(status_code=500, detail=result.get("error", "Domain analysis failed"))
+        
+    except Exception as e:
+        logger.error(f"Failed to analyze domains: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/health", response_model=HealthCheck)
 async def health_check():
     """Health check endpoint"""

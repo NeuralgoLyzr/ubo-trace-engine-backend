@@ -79,6 +79,10 @@ class TraceStageResult(BaseModel):
     summary: Optional[str] = None  # Summary from Lyzr response
     apollo_enrichment: Optional[Dict[str, Any]] = None  # Apollo.io enrichment data
     apollo_insights: Optional[Dict[str, Any]] = None  # Apollo.io insights and verification
+    searchapi_domain_search: Optional[Dict[str, Any]] = None  # SearchAPI domain search results
+    searchapi_domain_ownership: Optional[Dict[str, Any]] = None  # SearchAPI domain ownership results
+    searchapi_related_domains: Optional[Dict[str, Any]] = None  # SearchAPI related domains results
+    expert_domain_analysis: Optional[Dict[str, Any]] = None  # Expert AI domain analysis with confidence scores
     urls_found: List[str] = Field(default_factory=list)
     direct_connections: List[str] = Field(default_factory=list)
     indirect_connections: List[str] = Field(default_factory=list)

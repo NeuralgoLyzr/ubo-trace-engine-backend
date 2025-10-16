@@ -13,6 +13,7 @@ from models.schemas import (
 )
 from services.lyzr_service import LyzrAgentService
 from services.apollo_service import ApolloService
+from services.searchapi_service import SearchAPIService
 from utils.database import get_database
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class UBOTraceService:
     def __init__(self):
         self.lyzr_service = LyzrAgentService()
         self.apollo_service = ApolloService()
+        self.searchapi_service = SearchAPIService()
         self._db = None
     
     @property
@@ -209,6 +211,77 @@ class UBOTraceService:
                         logger.warning(f"Apollo enrichment failed for stage {stage}: {str(apollo_error)}")
                         stage_result.apollo_enrichment = {"error": str(apollo_error)}
                         stage_result.apollo_insights = {"error": str(apollo_error)}
+                    
+                    # Add SearchAPI domain search
+                    try:
+                        logger.info(f"Starting SearchAPI domain search for stage {stage}")
+                        
+                        # Search for domains using all three parameters
+                        domain_search = await self.searchapi_service.search_domains(
+                            entity, ubo_name, location
+                        )
+                        stage_result.searchapi_domain_search = domain_search
+                        
+                        # If domain is provided, search for ownership information
+                        if domain:
+                            domain_ownership = await self.searchapi_service.search_domain_ownership(
+                                entity, ubo_name, location, domain
+                            )
+                            stage_result.searchapi_domain_ownership = domain_ownership
+                        
+                        # Search for related domains
+                        related_domains = await self.searchapi_service.search_related_domains(
+                            entity, ubo_name, location
+                        )
+                        stage_result.searchapi_related_domains = related_domains
+                        
+                        logger.info(f"SearchAPI domain search completed for stage {stage}")
+                        logger.info(f"Found {domain_search.get('total_results', 0)} domains")
+                        logger.info(f"Found {related_domains.get('total_results', 0)} related domains")
+                        
+                    except Exception as searchapi_error:
+                        logger.warning(f"SearchAPI domain search failed for stage {stage}: {str(searchapi_error)}")
+                        stage_result.searchapi_domain_search = {"error": str(searchapi_error)}
+                        stage_result.searchapi_domain_ownership = {"error": str(searchapi_error)}
+                        stage_result.searchapi_related_domains = {"error": str(searchapi_error)}
+                    
+                    # Add Expert domain analysis
+                    try:
+                        logger.info(f"Starting Expert domain analysis for stage {stage}")
+                        
+                        # Get Lyzr domain analysis results
+                        lyzr_domains = []
+                        if hasattr(self.lyzr_service, 'analyze_company_domains'):
+                            try:
+                                lyzr_domain_response = await self.lyzr_service.analyze_company_domains(
+                                    entity, ubo_name, location
+                                )
+                                if lyzr_domain_response.success:
+                                    lyzr_domains = [domain.dict() for domain in lyzr_domain_response.companies]
+                            except Exception as e:
+                                logger.warning(f"Lyzr domain analysis failed: {str(e)}")
+                        
+                        # Get Google SERP domains from SearchAPI
+                        google_serp_domains = []
+                        if stage_result.searchapi_domain_search and stage_result.searchapi_domain_search.get("success"):
+                            google_serp_domains = stage_result.searchapi_domain_search.get("domains", [])
+                        
+                        # Call Expert agent for analysis
+                        if lyzr_domains or google_serp_domains:
+                            expert_analysis = await self.searchapi_service.analyze_domains_with_expert(
+                                entity, ubo_name, location, lyzr_domains, google_serp_domains
+                            )
+                            stage_result.expert_domain_analysis = expert_analysis
+                            
+                            logger.info(f"Expert domain analysis completed for stage {stage}")
+                            logger.info(f"Expert confidence: {expert_analysis.get('expert_analysis', {}).get('overall_confidence', 0)}%")
+                        else:
+                            logger.warning(f"No domain data available for Expert analysis in stage {stage}")
+                            stage_result.expert_domain_analysis = {"error": "No domain data available"}
+                        
+                    except Exception as expert_error:
+                        logger.warning(f"Expert domain analysis failed for stage {stage}: {str(expert_error)}")
+                        stage_result.expert_domain_analysis = {"error": str(expert_error)}
                     
                     # Parse results for backward compatibility
                     parsed_results = self.lyzr_service.parse_results(response.content, ubo_name)

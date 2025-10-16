@@ -37,10 +37,18 @@ class Settings(BaseSettings):
     agent_company_domain: str = ""  # Required - must be set in .env
     session_company_domain: str = ""  # Required - must be set in .env
     
+    # Expert Domain Analysis Agent
+    agent_expert_domain: str = ""  # Required - must be set in .env
+    session_expert_domain: str = ""  # Required - must be set in .env
+    
     # Apollo.io API settings
     apollo_api_key: str = ""  # Required - must be set in .env
     apollo_base_url: str = "https://api.apollo.io/v1"
     apollo_timeout: int = 30
+    
+    # SearchAPI Google settings
+    searchapi_api_key: str = ""  # Optional - for domain search enhancement
+    searchapi_timeout: int = 30
     
     # API settings
     api_timeout: int = 60
