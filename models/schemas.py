@@ -35,8 +35,8 @@ class TraceStage(str, Enum):
 class UBOTraceRequest(BaseModel):
     """Request model for UBO trace"""
     entity: str = Field(..., description="Entity name to trace")
-    ubo_name: str = Field(..., description="Ultimate Beneficial Owner name")
-    location: str = Field(..., description="Location/jurisdiction")
+    ubo_name: Optional[str] = Field(None, description="Ultimate Beneficial Owner name")
+    location: Optional[str] = Field(None, description="Location/jurisdiction")
     domain_name: Optional[str] = Field(None, description="Optional domain name for context")
 
 class UBOTraceResponse(BaseModel):
@@ -44,8 +44,8 @@ class UBOTraceResponse(BaseModel):
     id: Optional[str] = Field(default=None, alias="_id")
     trace_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     entity: str
-    ubo_name: str
-    location: str
+    ubo_name: Optional[str] = None
+    location: Optional[str] = None
     domain_name: Optional[str] = None
     status: TraceStatus = TraceStatus.PENDING
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -102,8 +102,8 @@ class TraceSummary(BaseModel):
     """Summary model for complete trace results"""
     trace_id: str
     entity: str
-    ubo_name: str
-    location: str
+    ubo_name: Optional[str] = None
+    location: Optional[str] = None
     domain_name: Optional[str] = None
     overall_status: TraceStatus
     stages_completed: int
@@ -160,7 +160,7 @@ class BatchTraceResponse(BaseModel):
 class CompanyDomainAnalysisRequest(BaseModel):
     """Request model for company domain analysis"""
     company_name: str = Field(..., description="Company name to analyze")
-    ubo_name: str = Field(..., description="Ultimate Beneficial Owner name")
+    ubo_name: Optional[str] = Field(None, description="Ultimate Beneficial Owner name")
     address: str = Field(..., description="Company address")
 
 class CompanyDomain(BaseModel):
@@ -186,3 +186,94 @@ class HealthCheck(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     database_status: str
     lyzr_api_status: str
+
+# UBO Search Models
+class UBOSearchRequest(BaseModel):
+    """Request model for UBO search"""
+    company_name: str = Field(..., description="Company name to search")
+    location: Optional[str] = Field(None, description="Optional location/jurisdiction")
+    domain: Optional[str] = Field(None, description="Optional domain name")
+    include_full_analysis: bool = Field(default=False, description="Include all steps (domain, csuite, registries, hierarchy)")
+
+class DomainInfo(BaseModel):
+    """Domain information result"""
+    entity: str
+    domain: Optional[str] = None
+    evidence: Optional[str] = None
+
+class Executive(BaseModel):
+    """Executive/C-suite member"""
+    name: str
+    role: Optional[str] = None
+    nationality: Optional[str] = None
+    source_url: Optional[str] = None
+
+class UBOCandidate(BaseModel):
+    """UBO candidate information"""
+    name: str
+    relation: Optional[str] = None
+    ubo_type: Optional[str] = None  # "Ownership" or "Control"
+    rationale: Optional[str] = None
+    source_url: Optional[str] = None
+
+class CrossVerifyCandidate(BaseModel):
+    """Cross-verified UBO candidate"""
+    candidate: str
+    evidence: Optional[str] = None
+    source_url: Optional[str] = None
+    confidence: Optional[str] = None  # "High", "Medium", or "Low"
+
+class RegistryPage(BaseModel):
+    """Registry or verification page"""
+    country: Optional[str] = None
+    registry_name: Optional[str] = None
+    registry_url: Optional[str] = None
+    next_steps: Optional[str] = None
+
+class HierarchyLayer(BaseModel):
+    """Ownership hierarchy layer"""
+    layer: str  # "Entity", "Parent", "Holding", "Trust", "Individual"
+    name: str
+    jurisdiction: Optional[str] = None
+    nationality: Optional[str] = None
+    source_url: Optional[str] = None
+
+class StepResult(BaseModel):
+    """Individual step result"""
+    step_name: str
+    step_number: int
+    status: str  # "completed", "failed", "skipped"
+    data: Optional[Dict[str, Any]] = None
+    raw_content: Optional[str] = None
+    error: Optional[str] = None
+    processing_time_ms: Optional[int] = None
+
+class UBOSearchResponse(BaseModel):
+    """Response model for UBO search"""
+    success: bool
+    entity: str
+    domain_info: Optional[DomainInfo] = None
+    c_suite: List[Executive] = Field(default_factory=list)
+    possible_ubos: List[UBOCandidate] = Field(default_factory=list)
+    cross_candidates: List[CrossVerifyCandidate] = Field(default_factory=list)
+    verification_pages: List[RegistryPage] = Field(default_factory=list)
+    ownership_chain: List[HierarchyLayer] = Field(default_factory=list)
+    
+    # Step-by-step results
+    step_results: List[StepResult] = Field(default_factory=list)
+    
+    # Summary fields
+    summary: Optional[Dict[str, Any]] = None
+    probable_ubos: Optional[str] = None
+    confidence: Optional[str] = None
+    
+    error: Optional[str] = None
+    processing_time_ms: Optional[int] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class ApolloPeopleSearchRequest(BaseModel):
+    """Request model for Apollo people search by organization"""
+    organization_name: str = Field(..., description="Organization name (required)")
+    person_titles: Optional[List[str]] = Field(None, description="Optional list of person titles (e.g., CEO, CTO, CFO, VP, Director)")
+    domains: Optional[List[str]] = Field(None, description="Optional list of domains")
+    locations: Optional[List[str]] = Field(None, description="Optional list of locations")

@@ -62,7 +62,7 @@ class LyzrAgentService:
             return "unknown"
         return f"{''.join(core[:2])}.com"
     
-    async def call_agent(self, stage: TraceStage, entity: str, ubo_name: str, location: str, domain: Optional[str] = None) -> LyzrAgentResponse:
+    async def call_agent(self, stage: TraceStage, entity: str, ubo_name: Optional[str] = None, location: Optional[str] = None, domain: Optional[str] = None) -> LyzrAgentResponse:
         """Call the appropriate Lyzr AI agent for the given stage"""
         
         start_time = time.time()
@@ -72,10 +72,15 @@ class LyzrAgentService:
             if not config:
                 raise ValueError(f"Unknown stage: {stage}")
             
-            # Build simple message with only required parameters
-            message = f"Entity: {entity}, UBO Name: {ubo_name}, Location: {location}"
+            # Build simple message with available parameters
+            message_parts = [f"Entity: {entity}"]
+            if ubo_name:
+                message_parts.append(f"UBO Name: {ubo_name}")
+            if location:
+                message_parts.append(f"Location: {location}")
             if domain:
-                message += f", Domain: {domain}"
+                message_parts.append(f"Domain: {domain}")
+            message = ", ".join(message_parts)
             
             request_data = LyzrAgentRequest(
                 user_id=self.user_id,
@@ -165,12 +170,12 @@ class LyzrAgentService:
                 processing_time_ms=processing_time
             )
     
-    def parse_results(self, content: str, ubo_name: str) -> Dict[str, Any]:
+    def parse_results(self, content: str, ubo_name: Optional[str] = None) -> Dict[str, Any]:
         """Parse the AI response and extract structured data"""
         
         urls = self._extract_urls(content)
         direct, indirect = [], []
-        name_variants = self._partial_name_patterns(ubo_name)
+        name_variants = self._partial_name_patterns(ubo_name) if ubo_name else []
         
         # Try to parse JSON response first (for Stage 1A, 1B, 2A, and 2B structured format)
         try:
@@ -215,7 +220,8 @@ class LyzrAgentService:
         
         for sentence in sentences:
             sentence_low = sentence.lower()
-            if self._find_mentions(sentence, name_variants):
+            # Only check for name mentions if ubo_name is provided
+            if not ubo_name or self._find_mentions(sentence, name_variants):
                 if any(keyword in sentence_low for keyword in ["shareholder", "director", "beneficial owner", "%", "appointed"]):
                     direct.append(sentence.strip())
                 elif any(keyword in sentence_low for keyword in ["subsidiary", "holding", "fund", "trust", "affiliate", "through", "owned by"]):
@@ -233,8 +239,10 @@ class LyzrAgentService:
         """Extract unique URLs from text"""
         return sorted(set(re.findall(r'https?://[^\s\)\]>,]+', text)))
     
-    def _partial_name_patterns(self, full_name: str) -> List[str]:
+    def _partial_name_patterns(self, full_name: Optional[str]) -> List[str]:
         """Return regex variants for partial match detection"""
+        if not full_name:
+            return []
         parts = full_name.split()
         patterns = [full_name.lower()]
         if len(parts) >= 2:
@@ -255,7 +263,7 @@ class LyzrAgentService:
         
         return len(response.companies) == 0
     
-    async def analyze_company_domains(self, company_name: str, ubo_name: str, address: str) -> CompanyDomainAnalysisResponse:
+    async def analyze_company_domains(self, company_name: str, ubo_name: Optional[str] = None, address: str = "") -> CompanyDomainAnalysisResponse:
         """Analyze company domains using the specialized Lyzr agent with retry logic for zero results"""
         
         start_time = time.time()
@@ -270,7 +278,12 @@ class LyzrAgentService:
                     logger.info(f"Retry attempt {attempt} for domain analysis (company: {company_name})")
                 
                 # Build message in the format expected by the agent
-                message = f"company_name : {company_name} , UBO_name: {ubo_name} , address: {address}"
+                message_parts = [f"company_name : {company_name}"]
+                if ubo_name:
+                    message_parts.append(f"UBO_name: {ubo_name}")
+                if address:
+                    message_parts.append(f"address: {address}")
+                message = " , ".join(message_parts)
                 
                 request_data = LyzrAgentRequest(
                     user_id=self.user_id,

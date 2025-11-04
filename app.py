@@ -48,8 +48,9 @@ async def startup_event():
         await connect_to_mongo()
         logger.info("Application startup completed successfully")
     except Exception as e:
-        logger.error(f"Failed to start application: {e}")
-        raise
+        logger.warning(f"MongoDB connection failed: {e}")
+        logger.warning("Server will start without database. Some features may be limited.")
+        # Don't raise - allow server to start for endpoints that don't need DB (like UBO search)
 
 @app.on_event("shutdown")
 async def shutdown_event():

@@ -41,6 +41,28 @@ class Settings(BaseSettings):
     agent_expert_domain: str = ""  # Required - must be set in .env
     session_expert_domain: str = ""  # Required - must be set in .env
     
+    # UBO Search Agents
+    agent_ubo_domain: str = ""  # Required - must be set in .env
+    session_ubo_domain: str = ""  # Required - must be set in .env
+    agent_ubo_csuite: str = ""  # Required - must be set in .env
+    session_ubo_csuite: str = ""  # Required - must be set in .env
+    agent_ubo_ubos: str = ""  # Required - must be set in .env
+    session_ubo_ubos: str = ""  # Required - must be set in .env
+    agent_ubo_crossverify: str = ""  # Required - must be set in .env
+    session_ubo_crossverify: str = ""  # Required - must be set in .env
+    agent_ubo_registries: str = ""  # Required - must be set in .env
+    session_ubo_registries: str = ""  # Required - must be set in .env
+    agent_ubo_hierarchy: str = ""  # Required - must be set in .env
+    session_ubo_hierarchy: str = ""  # Required - must be set in .env
+    
+    # UBO Ownership Analysis Agent (for Google Search results)
+    agent_ubo_ownership_analysis: str = ""  # Required - must be set in .env
+    session_ubo_ownership_analysis: str = ""  # Required - must be set in .env
+    
+    # Apollo People Search Analysis Agent (for Apollo API results)
+    agent_apollo_people_analysis: str = ""  # Required - must be set in .env
+    session_apollo_people_analysis: str = ""  # Required - must be set in .env
+    
     # Apollo.io API settings
     apollo_api_key: str = ""  # Required - must be set in .env
     apollo_base_url: str = "https://api.apollo.io/v1"
@@ -82,6 +104,24 @@ class Settings(BaseSettings):
             'session_stage_2b',
             'agent_company_domain',
             'session_company_domain',
+            'agent_expert_domain',
+            'session_expert_domain',
+            'agent_ubo_domain',
+            'session_ubo_domain',
+            'agent_ubo_csuite',
+            'session_ubo_csuite',
+            'agent_ubo_ubos',
+            'session_ubo_ubos',
+            'agent_ubo_crossverify',
+            'session_ubo_crossverify',
+            'agent_ubo_registries',
+            'session_ubo_registries',
+            'agent_ubo_hierarchy',
+            'session_ubo_hierarchy',
+            'agent_ubo_ownership_analysis',
+            'session_ubo_ownership_analysis',
+            'agent_apollo_people_analysis',
+            'session_apollo_people_analysis',
             'apollo_api_key'
         ]
         

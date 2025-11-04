@@ -153,7 +153,7 @@ class UBOTraceService:
         return direct_count == 0 and indirect_count == 0 and urls_count == 0
 
     async def _execute_stage(self, trace_id: str, stage: TraceStage, entity: str, 
-                           ubo_name: str, location: str, domain: Optional[str] = None) -> TraceStageResult:
+                           ubo_name: Optional[str] = None, location: Optional[str] = None, domain: Optional[str] = None) -> TraceStageResult:
         """Execute a single stage of the UBO trace with retry logic for zero results"""
         
         start_time = datetime.utcnow()
@@ -168,13 +168,23 @@ class UBOTraceService:
         for attempt in range(max_retries + 1):  # 0, 1, 2, 3 (total 4 attempts)
             is_retry = attempt > 0
             
+            # Build request message with available parameters
+            message_parts = [f"Entity: {entity}"]
+            if ubo_name:
+                message_parts.append(f"UBO: {ubo_name}")
+            if location:
+                message_parts.append(f"Location: {location}")
+            if domain:
+                message_parts.append(f"Domain: {domain}")
+            request_message = ", ".join(message_parts) if message_parts else f"Entity: {entity}"
+            
             stage_result = TraceStageResult(
                 trace_id=trace_id,
                 stage=stage,
                 status=TraceStatus.IN_PROGRESS,
                 agent_id=config["agent_id"],
                 session_id=config["session_id"],
-                request_message=f"Entity: {entity}, UBO: {ubo_name}, Location: {location}, Domain: {domain or 'N/A'}"
+                request_message=request_message
             )
             
             try:
@@ -216,7 +226,7 @@ class UBOTraceService:
                     try:
                         logger.info(f"Starting SearchAPI domain search for stage {stage}")
                         
-                        # Search for domains using all three parameters
+                        # Search for domains using available parameters
                         domain_search = await self.searchapi_service.search_domains(
                             entity, ubo_name, location
                         )
@@ -249,17 +259,10 @@ class UBOTraceService:
                     try:
                         logger.info(f"Starting Expert domain analysis for stage {stage}")
                         
-                        # Get Lyzr domain analysis results
+                        # Get Lyzr domain analysis results (requires address, so we'll skip if not available)
                         lyzr_domains = []
-                        if hasattr(self.lyzr_service, 'analyze_company_domains'):
-                            try:
-                                lyzr_domain_response = await self.lyzr_service.analyze_company_domains(
-                                    entity, ubo_name, location
-                                )
-                                if lyzr_domain_response.success:
-                                    lyzr_domains = [domain.dict() for domain in lyzr_domain_response.companies]
-                            except Exception as e:
-                                logger.warning(f"Lyzr domain analysis failed: {str(e)}")
+                        # Note: analyze_company_domains requires address parameter, so we skip it here
+                        # as we don't have address in the trace context
                         
                         # Get Google SERP domains from SearchAPI
                         google_serp_domains = []

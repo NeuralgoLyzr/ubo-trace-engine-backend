@@ -7,6 +7,7 @@ import httpx
 import time
 import logging
 import json
+import asyncio
 from typing import Dict, List, Optional, Any
 from utils.settings import get_settings
 
@@ -25,7 +26,7 @@ class SearchAPIService:
             logger.warning("SearchAPI API key not found - domain search will be disabled")
             self.api_key = None
     
-    async def search_domains(self, company_name: str, ubo_name: str, location: str) -> Dict[str, Any]:
+    async def search_domains(self, company_name: str, ubo_name: Optional[str] = None, location: Optional[str] = None) -> Dict[str, Any]:
         """Search for domains using all three parameters: company_name, ubo_name, location"""
         
         if not self.api_key:
@@ -42,12 +43,16 @@ class SearchAPIService:
                 "Content-Type": "application/json"
             }
             
-            # Build comprehensive search query with all three parameters
-            query = f"{company_name} {ubo_name} official website domain"
+            # Build comprehensive search query with available parameters
+            query_parts = [company_name]
+            if ubo_name:
+                query_parts.append(ubo_name)
+            query_parts.append("official website domain")
+            query = " ".join(query_parts)
             
             # Get country code and SearchAPI-compatible location
-            country_code = self._get_country_code(location)
-            searchapi_location = self._get_searchapi_location(location)
+            country_code = self._get_country_code(location) if location else "us"
+            searchapi_location = self._get_searchapi_location(location) if location else "United States"
             
             params = {
                 "engine": "google",
@@ -128,73 +133,381 @@ class SearchAPIService:
         logger.info(f"Extracted {len(domains)} unique domains from {len(organic_results)} organic results")
         return domains
     
-    def _get_country_code(self, location: str) -> str:
-        """Get country code from location string"""
+    def _get_country_code(self, location: Optional[str]) -> str:
+        """Get country code (ISO 3166-1 alpha-2) from location string"""
+        if not location:
+            return "us"  # Default to US
+        
         location_mapping = {
+            # United Arab Emirates
             "uae": "ae",
             "united arab emirates": "ae",
-            "isle of man": "im",
-            "united kingdom": "gb",
+            
+            # United Kingdom
             "uk": "gb",
+            "united kingdom": "gb",
+            "gb": "gb",
+            "great britain": "gb",
+            
+            # United States
             "usa": "us",
+            "us": "us",
             "united states": "us",
+            "united states of america": "us",
+            
+            # Isle of Man
+            "isle of man": "im",
+            "iom": "im",
+            
+            # Other countries
             "india": "in",
+            "in": "in",
+            
             "singapore": "sg",
+            "sg": "sg",
+            
             "hong kong": "hk",
+            "hk": "hk",
+            
             "switzerland": "ch",
+            "ch": "ch",
+            
             "netherlands": "nl",
+            "nl": "nl",
+            "holland": "nl",
+            
             "france": "fr",
+            "fr": "fr",
+            
             "germany": "de",
+            "de": "de",
+            
             "china": "cn",
+            "cn": "cn",
+            "prc": "cn",
+            "people's republic of china": "cn",
+            
             "japan": "jp",
+            "jp": "jp",
+            
             "australia": "au",
+            "au": "au",
+            
             "canada": "ca",
+            "ca": "ca",
+            
             "brazil": "br",
-            "argentina": "ar"
+            "br": "br",
+            
+            "argentina": "ar",
+            "ar": "ar",
+            
+            # Additional countries
+            "south korea": "kr",
+            "kr": "kr",
+            "korea": "kr",
+            
+            "south africa": "za",
+            "za": "za",
+            
+            "mexico": "mx",
+            "mx": "mx",
+            
+            "italy": "it",
+            "it": "it",
+            
+            "spain": "es",
+            "es": "es",
+            
+            "russia": "ru",
+            "ru": "ru",
+            "russian federation": "ru",
+            
+            "turkey": "tr",
+            "tr": "tr",
+            
+            "saudi arabia": "sa",
+            "sa": "sa",
+            "ksa": "sa",
+            
+            "qatar": "qa",
+            "qa": "qa",
+            
+            "kuwait": "kw",
+            "kw": "kw",
+            
+            "bahrain": "bh",
+            "bh": "bh",
+            
+            "oman": "om",
+            "om": "om",
+            
+            "jordan": "jo",
+            "jo": "jo",
+            
+            "lebanon": "lb",
+            "lb": "lb",
+            
+            "egypt": "eg",
+            "eg": "eg",
+            
+            "israel": "il",
+            "il": "il",
+            
+            "indonesia": "id",
+            "id": "id",
+            
+            "malaysia": "my",
+            "my": "my",
+            
+            "thailand": "th",
+            "th": "th",
+            
+            "philippines": "ph",
+            "ph": "ph",
+            
+            "vietnam": "vn",
+            "vn": "vn",
+            
+            "new zealand": "nz",
+            "nz": "nz",
+            
+            "poland": "pl",
+            "pl": "pl",
+            
+            "sweden": "se",
+            "se": "se",
+            
+            "norway": "no",
+            "no": "no",
+            
+            "denmark": "dk",
+            "dk": "dk",
+            
+            "finland": "fi",
+            "fi": "fi",
+            
+            "belgium": "be",
+            "be": "be",
+            
+            "austria": "at",
+            "at": "at",
+            
+            "portugal": "pt",
+            "pt": "pt",
+            
+            "greece": "gr",
+            "gr": "gr",
+            
+            "ireland": "ie",
+            "ie": "ie",
         }
         
-        location_lower = location.lower()
+        location_lower = location.lower().strip()
+        
+        # Check for exact match first
+        if location_lower in location_mapping:
+            return location_mapping[location_lower]
+        
+        # Check for partial match (key in location string)
         for key, code in location_mapping.items():
             if key in location_lower:
                 return code
         
         return "us"  # Default to US
     
-    def _get_searchapi_location(self, location: str) -> str:
-        """Get SearchAPI-compatible location string"""
+    def _get_searchapi_location(self, location: Optional[str]) -> str:
+        """Get SearchAPI-compatible location string, mapping short forms to full country names"""
+        if not location:
+            return "United States"  # Default
+        
         location_mapping = {
+            # United Arab Emirates
             "uae": "United Arab Emirates",
             "united arab emirates": "United Arab Emirates",
-            "isle of man": "Isle of Man",
-            "united kingdom": "United Kingdom",
+            
+            # United Kingdom
             "uk": "United Kingdom",
+            "united kingdom": "United Kingdom",
+            "gb": "United Kingdom",
+            "great britain": "United Kingdom",
+            
+            # United States
             "usa": "United States",
+            "us": "United States",
             "united states": "United States",
+            "united states of america": "United States",
+            
+            # Other common countries with short forms
+            "isle of man": "Isle of Man",
+            "iom": "Isle of Man",
+            
             "india": "India",
+            "in": "India",
+            
             "singapore": "Singapore",
+            "sg": "Singapore",
+            
             "hong kong": "Hong Kong",
+            "hk": "Hong Kong",
+            
             "switzerland": "Switzerland",
+            "ch": "Switzerland",
+            
             "netherlands": "Netherlands",
+            "nl": "Netherlands",
+            "holland": "Netherlands",
+            
             "france": "France",
+            "fr": "France",
+            
             "germany": "Germany",
+            "de": "Germany",
+            
             "china": "China",
+            "cn": "China",
+            "prc": "China",
+            "people's republic of china": "China",
+            
             "japan": "Japan",
+            "jp": "Japan",
+            
             "australia": "Australia",
+            "au": "Australia",
+            
             "canada": "Canada",
+            "ca": "Canada",
+            
             "brazil": "Brazil",
-            "argentina": "Argentina"
+            "br": "Brazil",
+            
+            "argentina": "Argentina",
+            "ar": "Argentina",
+            
+            # Additional common countries
+            "south korea": "South Korea",
+            "kr": "South Korea",
+            "korea": "South Korea",
+            
+            "south africa": "South Africa",
+            "za": "South Africa",
+            
+            "mexico": "Mexico",
+            "mx": "Mexico",
+            
+            "italy": "Italy",
+            "it": "Italy",
+            
+            "spain": "Spain",
+            "es": "Spain",
+            
+            "russia": "Russia",
+            "ru": "Russia",
+            "russian federation": "Russia",
+            
+            "turkey": "Turkey",
+            "tr": "Turkey",
+            
+            "saudi arabia": "Saudi Arabia",
+            "sa": "Saudi Arabia",
+            "ksa": "Saudi Arabia",
+            
+            "qatar": "Qatar",
+            "qa": "Qatar",
+            
+            "kuwait": "Kuwait",
+            "kw": "Kuwait",
+            
+            "bahrain": "Bahrain",
+            "bh": "Bahrain",
+            
+            "oman": "Oman",
+            "om": "Oman",
+            
+            "jordan": "Jordan",
+            "jo": "Jordan",
+            
+            "lebanon": "Lebanon",
+            "lb": "Lebanon",
+            
+            "egypt": "Egypt",
+            "eg": "Egypt",
+            
+            "israel": "Israel",
+            "il": "Israel",
+            
+            "indonesia": "Indonesia",
+            "id": "Indonesia",
+            
+            "malaysia": "Malaysia",
+            "my": "Malaysia",
+            
+            "thailand": "Thailand",
+            "th": "Thailand",
+            
+            "philippines": "Philippines",
+            "ph": "Philippines",
+            
+            "vietnam": "Vietnam",
+            "vn": "Vietnam",
+            
+            "new zealand": "New Zealand",
+            "nz": "New Zealand",
+            
+            "poland": "Poland",
+            "pl": "Poland",
+            
+            "sweden": "Sweden",
+            "se": "Sweden",
+            
+            "norway": "Norway",
+            "no": "Norway",
+            
+            "denmark": "Denmark",
+            "dk": "Denmark",
+            
+            "finland": "Finland",
+            "fi": "Finland",
+            
+            "belgium": "Belgium",
+            "be": "Belgium",
+            
+            "austria": "Austria",
+            "at": "Austria",
+            
+            "portugal": "Portugal",
+            "pt": "Portugal",
+            
+            "greece": "Greece",
+            "gr": "Greece",
+            
+            "ireland": "Ireland",
+            "ie": "Ireland",
         }
         
-        location_lower = location.lower()
-        for key, full_name in location_mapping.items():
-            if key in location_lower:
-                return full_name
+        location_lower = location.lower().strip()
         
-        return "United States"  # Default to United States
+        # Check for exact match first
+        if location_lower in location_mapping:
+            return location_mapping[location_lower]
+        
+        # Check for partial match (key in location string)
+        for key, value in location_mapping.items():
+            if key in location_lower:
+                return value
+        
+        # If no mapping found, try to format the location nicely
+        # Capitalize first letter of each word
+        return location.title()
     
-    async def analyze_domains_with_expert(self, company_name: str, ubo_name: str, location: str, 
-                                       lyzr_domains: List[Dict], google_serp_domains: List[Dict]) -> Dict[str, Any]:
+    async def analyze_domains_with_expert(self, company_name: str, ubo_name: Optional[str] = None, location: Optional[str] = None, 
+                                       lyzr_domains: List[Dict] = None, google_serp_domains: List[Dict] = None) -> Dict[str, Any]:
         """Analyze domain search results using Expert Lyzr AI agent for confidence scores and rankings"""
+        
+        if lyzr_domains is None:
+            lyzr_domains = []
+        if google_serp_domains is None:
+            google_serp_domains = []
         
         # Check if Expert domain analysis is configured
         if not self.settings.agent_expert_domain or not self.settings.session_expert_domain:
@@ -213,12 +526,13 @@ class SearchAPIService:
                 "x-api-key": self.settings.lyzr_api_key
             }
             
-            # Build message for Expert agent
-            message = f"""company_name: {company_name} , UBO_name: {ubo_name} , location: {location}
-
-lyzr_agent_domains:{json.dumps(lyzr_domains, indent=2)}
-
-google_serp_domain:{json.dumps(google_serp_domains, indent=2)}"""
+            # Build message for Expert agent with available parameters
+            message_parts = [f"company_name: {company_name}"]
+            if ubo_name:
+                message_parts.append(f"UBO_name: {ubo_name}")
+            if location:
+                message_parts.append(f"location: {location}")
+            message = " , ".join(message_parts) + f"\n\nlyzr_agent_domains:{json.dumps(lyzr_domains, indent=2)}\n\ngoogle_serp_domain:{json.dumps(google_serp_domains, indent=2)}"
             
             request_data = {
                 "user_id": self.settings.lyzr_user_id,
@@ -359,23 +673,22 @@ google_serp_domain:{json.dumps(google_serp_domains, indent=2)}"""
         
         return formatted_results
     
-    async def analyze_domains_for_api(self, company_name: str, ubo_name: str, location: str) -> Dict[str, Any]:
+    async def analyze_domains_for_api(self, company_name: str, ubo_name: Optional[str] = None, location: Optional[str] = None) -> Dict[str, Any]:
         """Analyze domains and return formatted results for API endpoint"""
         
         try:
-            # Get Lyzr domain analysis results
+            # Get Lyzr domain analysis results (only if ubo_name is provided)
             lyzr_domains = []
-            try:
-                from services.lyzr_service import LyzrAgentService
-                lyzr_service = LyzrAgentService()
-                if hasattr(lyzr_service, 'analyze_company_domains'):
-                    lyzr_domain_response = await lyzr_service.analyze_company_domains(
-                        company_name, ubo_name, location
-                    )
-                    if lyzr_domain_response.success:
-                        lyzr_domains = [domain.dict() for domain in lyzr_domain_response.companies]
-            except Exception as e:
-                logger.warning(f"Lyzr domain analysis failed: {str(e)}")
+            if ubo_name:
+                try:
+                    from services.lyzr_service import LyzrAgentService
+                    lyzr_service = LyzrAgentService()
+                    if hasattr(lyzr_service, 'analyze_company_domains'):
+                        # Note: analyze_company_domains requires address, but we'll handle it gracefully
+                        # For now, we'll skip if address is not available
+                        pass
+                except Exception as e:
+                    logger.warning(f"Lyzr domain analysis failed: {str(e)}")
             
             # Get Google SERP domains from SearchAPI
             google_serp_domains = []
@@ -434,7 +747,7 @@ google_serp_domain:{json.dumps(google_serp_domains, indent=2)}"""
                 "analysis_summary": ""
             }
     
-    async def search_domain_ownership(self, company_name: str, ubo_name: str, location: str, domain: str) -> Dict[str, Any]:
+    async def search_domain_ownership(self, company_name: str, ubo_name: Optional[str] = None, location: Optional[str] = None, domain: str = "") -> Dict[str, Any]:
         """Search for ownership information on a specific domain"""
         
         if not self.api_key:
@@ -452,10 +765,14 @@ google_serp_domain:{json.dumps(google_serp_domains, indent=2)}"""
             }
             
             # Build domain-specific ownership search query
-            query = f"site:{domain} {company_name} {ubo_name} owner director"
+            query_parts = [f"site:{domain}", company_name]
+            if ubo_name:
+                query_parts.append(ubo_name)
+            query_parts.extend(["owner", "director"])
+            query = " ".join(query_parts)
             
-            country_code = self._get_country_code(location)
-            searchapi_location = self._get_searchapi_location(location)
+            country_code = self._get_country_code(location) if location else "us"
+            searchapi_location = self._get_searchapi_location(location) if location else "United States"
             
             params = {
                 "engine": "google",
@@ -499,7 +816,7 @@ google_serp_domain:{json.dumps(google_serp_domains, indent=2)}"""
                 "total_results": 0
             }
     
-    async def search_related_domains(self, company_name: str, ubo_name: str, location: str) -> Dict[str, Any]:
+    async def search_related_domains(self, company_name: str, ubo_name: Optional[str] = None, location: Optional[str] = None) -> Dict[str, Any]:
         """Search for related domains (subsidiaries, parent companies, etc.)"""
         
         if not self.api_key:
@@ -517,10 +834,16 @@ google_serp_domain:{json.dumps(google_serp_domains, indent=2)}"""
             }
             
             # Build related domains search query
-            query = f"{company_name} {ubo_name} {location} subsidiary parent company website domain"
+            query_parts = [company_name]
+            if ubo_name:
+                query_parts.append(ubo_name)
+            if location:
+                query_parts.append(location)
+            query_parts.extend(["subsidiary", "parent", "company", "website", "domain"])
+            query = " ".join(query_parts)
             
-            country_code = self._get_country_code(location)
-            searchapi_location = self._get_searchapi_location(location)
+            country_code = self._get_country_code(location) if location else "us"
+            searchapi_location = self._get_searchapi_location(location) if location else "United States"
             
             params = {
                 "engine": "google",
@@ -561,3 +884,286 @@ google_serp_domain:{json.dumps(google_serp_domains, indent=2)}"""
                 "related_domains": [],
                 "total_results": 0
             }
+    
+    async def search_ubo_ownership(self, company_name: str, location: Optional[str] = None) -> Dict[str, Any]:
+        """Search for UBO ownership information using Google Search API"""
+        
+        if not self.api_key:
+            return {
+                "success": False,
+                "error": "SearchAPI API key not configured",
+                "organic_results": [],
+                "related_questions": [],
+                "lyzr_analysis": None
+            }
+        
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            # Build UBO ownership search query
+            query = f'{company_name} "ultimate beneficial owner" OR "shareholder" OR "ownership" "stake holding"'
+            
+            # Get country code and SearchAPI-compatible location
+            country_code = "us"  # Default
+            searchapi_location = "United States"  # Default
+            
+            if location:
+                country_code = self._get_country_code(location)
+                searchapi_location = self._get_searchapi_location(location)
+            
+            params = {
+                "engine": "google",
+                "q": query,
+                "location": searchapi_location,
+                "gl": country_code,
+                "hl": "en",
+                "num": 20
+            }
+            
+            logger.info(f"SearchAPI UBO ownership search: {company_name} - {location}")
+            logger.info(f"Search query: {query}")
+            
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
+                    self.base_url,
+                    headers=headers,
+                    params=params
+                )
+                
+                # Handle rate limiting
+                if response.status_code == 429:
+                    error_msg = "SearchAPI rate limit exceeded. Please try again later."
+                    logger.warning(f"SearchAPI rate limit exceeded for UBO ownership search")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "error_code": "RATE_LIMIT_EXCEEDED",
+                        "organic_results": [],
+                        "related_questions": [],
+                        "lyzr_analysis": None
+                    }
+                
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                # Extract only organic_results and related_questions
+                organic_results = result.get("organic_results", [])
+                related_questions = result.get("related_questions", [])
+                
+                logger.info(f"SearchAPI UBO ownership search completed: {len(organic_results)} organic results, {len(related_questions)} related questions")
+                
+                # Send to Lyzr agent for analysis
+                lyzr_analysis = await self._analyze_ubo_ownership_with_lyzr(
+                    company_name, organic_results, related_questions
+                )
+                
+                return {
+                    "success": True,
+                    "organic_results": organic_results,
+                    "related_questions": related_questions,
+                    "lyzr_analysis": lyzr_analysis,
+                    "search_query": query,
+                    "total_organic_results": len(organic_results),
+                    "total_related_questions": len(related_questions)
+                }
+                
+        except Exception as e:
+            logger.error(f"SearchAPI UBO ownership search failed: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "organic_results": [],
+                "related_questions": [],
+                "lyzr_analysis": None
+            }
+    
+    async def _analyze_ubo_ownership_with_lyzr(self, company_name: str, 
+                                               organic_results: List[Dict], 
+                                               related_questions: List[Dict]) -> Dict[str, Any]:
+        """Analyze UBO ownership search results using Lyzr agent with retry logic"""
+        
+        # Check if Lyzr agent is configured
+        if not self.settings.agent_ubo_ownership_analysis or not self.settings.session_ubo_ownership_analysis:
+            logger.warning("UBO ownership analysis agent not configured - skipping analysis")
+            return {
+                "success": False,
+                "error": "UBO ownership analysis agent not configured",
+                "analysis": None,
+                "raw_response": ""
+            }
+        
+        max_retries = 3
+        retry_delay = 2.0  # Start with 2 seconds, exponential backoff
+        
+        for attempt in range(max_retries + 1):
+            try:
+                headers = {
+                    "Content-Type": "application/json",
+                    "x-api-key": self.settings.lyzr_api_key
+                }
+                
+                # Build message for Lyzr agent
+                message = f"""company_name: {company_name}
+
+organic_results:
+{json.dumps(organic_results, indent=2)}
+
+related_questions:
+{json.dumps(related_questions, indent=2)}"""
+                
+                request_data = {
+                    "user_id": self.settings.lyzr_user_id,
+                    "agent_id": self.settings.agent_ubo_ownership_analysis,
+                    "session_id": self.settings.session_ubo_ownership_analysis,
+                    "message": message
+                }
+                
+                if attempt > 0:
+                    logger.info(f"Retry attempt {attempt}/{max_retries} for Lyzr UBO ownership analysis: {company_name}")
+                else:
+                    logger.info(f"Calling Lyzr UBO ownership analysis agent for: {company_name}")
+                
+                logger.info(f"Analyzing {len(organic_results)} organic results and {len(related_questions)} related questions")
+                
+                start_time = time.time()
+                # Increase timeout for Lyzr agent calls (60 seconds)
+                timeout = httpx.Timeout(60.0, connect=10.0)
+                
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        self.settings.lyzr_api_url,
+                        headers=headers,
+                        json=request_data
+                    )
+                    response.raise_for_status()
+                    
+                    result = response.json()
+                    
+                    # Extract content from response
+                    content = result.get("response", "")
+                    if not content:
+                        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    if not content:
+                        content = result.get("content", "")
+                    
+                    # Check if we got a valid response
+                    if not content or content.strip() == "":
+                        if attempt < max_retries:
+                            logger.warning(f"Lyzr UBO ownership analysis returned empty response (attempt {attempt + 1}/{max_retries + 1}). Retrying in {retry_delay} seconds...")
+                            await asyncio.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                            continue
+                        else:
+                            logger.warning(f"Lyzr UBO ownership analysis returned empty response after {max_retries + 1} attempts")
+                            return {
+                                "success": False,
+                                "error": "Lyzr agent returned empty response after retries",
+                                "analysis": None,
+                                "raw_response": ""
+                            }
+                    
+                    processing_time_ms = int((time.time() - start_time) * 1000)
+                    logger.info(f"Lyzr UBO ownership analysis completed in {processing_time_ms}ms (attempt {attempt + 1})")
+                    
+                    return {
+                        "success": True,
+                        "analysis": content,
+                        "raw_response": content,
+                        "processing_time_ms": processing_time_ms
+                    }
+                    
+            except httpx.TimeoutException as e:
+                error_msg = "Lyzr agent request timed out. The service may be experiencing high load."
+                logger.error(f"Lyzr UBO ownership analysis timeout (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                
+                # Retry on timeout
+                if attempt < max_retries:
+                    logger.info(f"Retrying Lyzr UBO ownership analysis in {retry_delay} seconds due to timeout...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "analysis": None,
+                        "raw_response": ""
+                    }
+            except httpx.ConnectError as e:
+                error_msg = "Unable to connect to Lyzr agent. Please check your internet connection."
+                logger.error(f"Lyzr UBO ownership analysis connection error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                
+                # Retry on connection errors
+                if attempt < max_retries:
+                    logger.info(f"Retrying Lyzr UBO ownership analysis in {retry_delay} seconds due to connection error...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "analysis": None,
+                        "raw_response": ""
+                    }
+            except httpx.HTTPStatusError as e:
+                error_msg = f"HTTP error {e.response.status_code}: {str(e)}"
+                logger.error(f"Lyzr UBO ownership analysis failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                
+                # Don't retry on 4xx errors (client errors)
+                if 400 <= e.response.status_code < 500:
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "analysis": None,
+                        "raw_response": ""
+                    }
+                
+                # Retry on 5xx errors (server errors) or network errors
+                if attempt < max_retries:
+                    logger.info(f"Retrying Lyzr UBO ownership analysis in {retry_delay} seconds due to error...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "analysis": None,
+                        "raw_response": ""
+                    }
+                    
+            except Exception as e:
+                error_msg = str(e)
+                # Check if it's a connection/disconnection error
+                if "disconnected" in error_msg.lower() or "connection" in error_msg.lower() or "timeout" in error_msg.lower():
+                    error_msg = "Lyzr agent connection was interrupted or timed out. Please try again."
+                
+                logger.error(f"Lyzr UBO ownership analysis failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                
+                # If this is not the last attempt, wait before retrying
+                if attempt < max_retries:
+                    logger.info(f"Retrying Lyzr UBO ownership analysis in {retry_delay} seconds due to error...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    # Final attempt failed
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "analysis": None,
+                        "raw_response": ""
+                    }
+        
+        # This should never be reached, but just in case
+        return {
+            "success": False,
+            "error": "Lyzr UBO ownership analysis failed after all retries",
+            "analysis": None,
+            "raw_response": ""
+        }

@@ -9,10 +9,11 @@ import logging
 from models.schemas import (
     UBOTraceRequest, UBOTraceResponse, TraceSummary, TraceStageResult,
     BatchTraceRequest, BatchTraceResponse, HealthCheck,
-    CompanyDomainAnalysisRequest, CompanyDomainAnalysisResponse
+    CompanyDomainAnalysisRequest, CompanyDomainAnalysisResponse,
+    UBOSearchRequest, UBOSearchResponse, ApolloPeopleSearchRequest
 )
 from services.ubo_trace_service import UBOTraceService
-from utils.database import get_database
+from utils.database import get_database, is_database_available
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,17 @@ ubo_service = UBOTraceService()
 @router.post("/trace", response_model=UBOTraceResponse)
 async def create_ubo_trace(request: UBOTraceRequest):
     """Create a new UBO trace"""
+    if not is_database_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Database service unavailable. MongoDB connection is not available."
+        )
     try:
         trace = await ubo_service.create_trace(request)
         logger.info(f"Created UBO trace: {trace.trace_id}")
         return trace
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to create UBO trace: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -76,6 +84,11 @@ async def get_trace_summary(trace_id: str):
 @router.get("/trace/{trace_id}/stages", response_model=List[TraceStageResult])
 async def get_trace_stages(trace_id: str):
     """Get all stage results for a trace"""
+    if not is_database_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Database service unavailable. MongoDB connection is not available."
+        )
     try:
         db = get_database()
         stages = await db.trace_results.find({"trace_id": trace_id}).to_list(None)
@@ -84,6 +97,8 @@ async def get_trace_stages(trace_id: str):
             if "_id" in stage:
                 stage["_id"] = str(stage["_id"])
         return [TraceStageResult(**stage) for stage in stages]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get trace stages {trace_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -107,6 +122,12 @@ async def list_traces(
     entity: Optional[str] = Query(default=None)
 ):
     """List all UBO traces with optional filtering"""
+    if not is_database_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Database service unavailable. MongoDB connection is not available."
+        )
+    
     try:
         db = get_database()
         
@@ -127,13 +148,29 @@ async def list_traces(
                 trace["_id"] = str(trace["_id"])
         
         return traces
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to list traces: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        # Check for MongoDB connection errors
+        if "timed out" in error_msg.lower() or "mongodb" in error_msg.lower() or "database" in error_msg.lower():
+            logger.error(f"Database connection error: {error_msg}")
+            raise HTTPException(
+                status_code=503,
+                detail="Database service unavailable. MongoDB connection is not available."
+            )
+        logger.error(f"Failed to list traces: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 @router.get("/traces/stats", response_model=Dict[str, Any])
 async def get_trace_statistics():
     """Get UBO trace statistics"""
+    if not is_database_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Database service unavailable. MongoDB connection is not available."
+        )
+    
     try:
         db = get_database()
         
@@ -161,13 +198,28 @@ async def get_trace_statistics():
             "recent_traces_24h": recent_traces,
             "generated_at": datetime.utcnow()
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to get trace statistics: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        # Check for MongoDB connection errors
+        if "timed out" in error_msg.lower() or "mongodb" in error_msg.lower() or "database" in error_msg.lower():
+            logger.error(f"Database connection error: {error_msg}")
+            raise HTTPException(
+                status_code=503,
+                detail="Database service unavailable. MongoDB connection is not available."
+            )
+        logger.error(f"Failed to get trace statistics: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 @router.delete("/trace/{trace_id}")
 async def delete_trace(trace_id: str):
     """Delete a UBO trace and all its results"""
+    if not is_database_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Database service unavailable. MongoDB connection is not available."
+        )
     try:
         db = get_database()
         
@@ -210,8 +262,8 @@ async def analyze_company_domains(request: CompanyDomainAnalysisRequest):
 @router.post("/domain-analysis")
 async def analyze_domains_with_expert(
     company_name: str,
-    ubo_name: str,
-    location: str
+    ubo_name: Optional[str] = None,
+    location: Optional[str] = None
 ):
     """Analyze domains using Expert AI agent and return confidence scores and rankings"""
     try:
@@ -235,6 +287,155 @@ async def analyze_domains_with_expert(
         
     except Exception as e:
         logger.error(f"Failed to analyze domains: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/search-ubo-ownership")
+async def search_ubo_ownership(
+    company_name: str,
+    location: Optional[str] = None
+):
+    """Search for UBO ownership information using Google Search API and analyze with Lyzr agent"""
+    try:
+        from services.searchapi_service import SearchAPIService
+        
+        searchapi_service = SearchAPIService()
+        
+        logger.info(f"Starting UBO ownership search for: {company_name} - {location}")
+        
+        # Call the UBO ownership search method
+        result = await searchapi_service.search_ubo_ownership(
+            company_name, location
+        )
+        
+        if result.get("success"):
+            logger.info(f"UBO ownership search completed: {result.get('total_organic_results', 0)} organic results, {result.get('total_related_questions', 0)} related questions")
+            return result
+        else:
+            error_code = result.get("error_code")
+            error_message = result.get("error", "UBO ownership search failed")
+            
+            # Handle rate limiting with 429 status
+            if error_code == "RATE_LIMIT_EXCEEDED":
+                logger.warning(f"UBO ownership search rate limited: {error_message}")
+                raise HTTPException(status_code=429, detail=error_message)
+            
+            logger.error(f"UBO ownership search failed: {error_message}")
+            raise HTTPException(status_code=500, detail=error_message)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to search UBO ownership: {str(e)}")
+        
+        # Check if it's a rate limit error
+        error_str = str(e)
+        if "429" in error_str or "rate limit" in error_str.lower() or "too many requests" in error_str.lower():
+            raise HTTPException(status_code=429, detail="SearchAPI rate limit exceeded. Please try again later.")
+        
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/apollo-people-search")
+async def apollo_people_search_by_organization(request: ApolloPeopleSearchRequest):
+    """Search for people by organization using Apollo API with advanced filters"""
+    try:
+        from services.apollo_service import ApolloService
+        
+        apollo_service = ApolloService()
+        
+        logger.info(f"Starting Apollo people search for organization: {request.organization_name}")
+        
+        # Call the Apollo people search method
+        result = await apollo_service.search_people_by_organization(
+            organization_name=request.organization_name,
+            person_titles=request.person_titles,
+            domains=request.domains,
+            locations=request.locations
+        )
+        
+        if result.get("success"):
+            logger.info(f"Apollo people search completed: {result.get('total_results', 0)} people found")
+            return result
+        else:
+            error_message = result.get("error", "Apollo people search failed")
+            logger.error(f"Apollo people search failed: {error_message}")
+            
+            # Check if it's a connection/SSL/timeout error - return 503 (Service Unavailable)
+            error_lower = error_message.lower()
+            if any(keyword in error_lower for keyword in ["connection", "ssl", "timeout", "unable to connect", "interrupted", "disconnected"]):
+                raise HTTPException(status_code=503, detail=error_message)
+            # For other errors, return 500
+            else:
+                raise HTTPException(status_code=500, detail=error_message)
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.error(f"Apollo service not configured: {str(e)}")
+        raise HTTPException(status_code=503, detail="Apollo API key not configured")
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Failed to search Apollo people: {error_str}")
+        
+        # Check if it's a connection/SSL/timeout error
+        error_lower = error_str.lower()
+        if any(keyword in error_lower for keyword in ["connection", "ssl", "timeout", "unable to connect", "interrupted", "disconnected"]):
+            raise HTTPException(status_code=503, detail="Apollo API connection error. Please try again later.")
+        else:
+            raise HTTPException(status_code=500, detail=error_str)
+
+@router.post("/search-ubo", response_model=UBOSearchResponse)
+async def search_ubo(request: UBOSearchRequest):
+    """Search for Ultimate Beneficial Owners using Lyzr agents"""
+    try:
+        from services.ubo_search_service import UBOSearchService
+        ubo_search_service = UBOSearchService()
+        
+        result = await ubo_search_service.search_ubo(request)
+        
+        logger.info(f"UBO search completed for {request.company_name}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to search UBO: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/search-domain-standalone")
+async def search_domain_standalone(
+    company_name: str = Query(...),
+    location: Optional[str] = Query(None)
+):
+    """Standalone domain search endpoint"""
+    try:
+        from services.ubo_search_service import UBOSearchService
+        ubo_search_service = UBOSearchService()
+        
+        result = await ubo_search_service.search_domain(company_name, location)
+        
+        logger.info(f"Domain search completed for {company_name}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to search domain: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/search-csuite-standalone")
+async def search_csuite_standalone(
+    company_name: str = Query(...),
+    domain: Optional[str] = Query(None),
+    location: Optional[str] = Query(None)
+):
+    """Standalone C-suite search endpoint"""
+    try:
+        from services.ubo_search_service import UBOSearchService
+        ubo_search_service = UBOSearchService()
+        
+        result = await ubo_search_service.search_csuite(company_name, domain, location)
+        
+        logger.info(f"C-suite search completed for {company_name}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to search C-suite: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/health", response_model=HealthCheck)

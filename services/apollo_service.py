@@ -6,6 +6,8 @@ Provides data enrichment capabilities using Apollo's database
 import httpx
 import time
 import logging
+import json
+import asyncio
 from typing import Dict, List, Optional, Any
 from utils.settings import get_settings
 
@@ -84,6 +86,146 @@ class ApolloService:
                 "error": str(e),
                 "people": [],
                 "total_results": 0
+            }
+    
+    async def search_people_by_organization(
+        self,
+        organization_name: str,
+        person_titles: Optional[List[str]] = None,
+        domains: Optional[List[str]] = None,
+        locations: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Search for people by organization using Apollo's People Search API with advanced filters"""
+        
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Cache-Control": "no-cache",
+                "Accept": "application/json"
+            }
+            
+            # Build search data matching the exact Apollo API format
+            search_data = {
+                "api_key": self.api_key,
+                "q_organization_names": [organization_name]
+            }
+            
+            # Add optional person titles (default to CEO, CTO, CFO, VP, Director if not provided)
+            if person_titles:
+                search_data["person_titles"] = person_titles
+            else:
+                search_data["person_titles"] = ["CEO", "CTO", "CFO", "VP", "Director"]
+            
+            # Add optional domains
+            if domains:
+                search_data["domains"] = domains
+            
+            # Add optional locations (note: API uses "q_organization_locatios" with typo)
+            if locations:
+                search_data["q_organization_locatios"] = locations
+            
+            logger.info(f"Searching Apollo for people in organization: {organization_name}")
+            logger.info(f"Search parameters: {search_data}")
+            
+            # Increase timeout for Apollo API calls (60 seconds)
+            timeout = httpx.Timeout(60.0, connect=10.0)
+            
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}/people/search",
+                    headers=headers,
+                    json=search_data
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                people = result.get("people", [])
+                logger.info(f"Apollo people search by organization completed: {len(people)} results")
+                
+                # Extract relevant data
+                filtered_people = [self._extract_relevant_person_data(person) for person in people]
+                
+                # Send to Lyzr agent for analysis (even if Apollo returned empty results)
+                lyzr_analysis = await self._analyze_apollo_people_with_lyzr(
+                    organization_name, filtered_people, search_data
+                )
+                
+                return {
+                    "success": True,
+                    "people": filtered_people,
+                    "total_results": len(filtered_people),
+                    "lyzr_analysis": lyzr_analysis,
+                    "search_params": {
+                        "organization_name": organization_name,
+                        "person_titles": search_data.get("person_titles"),
+                        "domains": domains,
+                        "locations": locations
+                    },
+                    "raw_response": result
+                }
+                
+        except httpx.TimeoutException as e:
+            error_msg = "Apollo API request timed out. The service may be experiencing high load. Please try again later."
+            logger.error(f"Apollo people search timeout: {str(e)}")
+            return {
+                "success": False,
+                "error": error_msg,
+                "people": [],
+                "total_results": 0,
+                "lyzr_analysis": None
+            }
+        except httpx.ConnectError as e:
+            error_msg = "Unable to connect to Apollo API. The service may be temporarily unavailable. Please try again later."
+            logger.error(f"Apollo people search connection error: {str(e)}")
+            # Log the actual error for debugging
+            logger.debug(f"Connection error details: {type(e).__name__}: {str(e)}")
+            return {
+                "success": False,
+                "error": error_msg,
+                "people": [],
+                "total_results": 0,
+                "lyzr_analysis": None
+            }
+        except httpx.ReadError as e:
+            # Handle SSL/read errors
+            error_msg = "Apollo API connection was interrupted. Please try again."
+            logger.error(f"Apollo people search read error: {str(e)}")
+            logger.debug(f"Read error details: {type(e).__name__}: {str(e)}")
+            return {
+                "success": False,
+                "error": error_msg,
+                "people": [],
+                "total_results": 0,
+                "lyzr_analysis": None
+            }
+        except httpx.HTTPStatusError as e:
+            error_msg = f"Apollo API returned error: HTTP {e.response.status_code}"
+            logger.error(f"Apollo people search HTTP error {e.response.status_code}: {str(e)}")
+            return {
+                "success": False,
+                "error": error_msg,
+                "people": [],
+                "total_results": 0,
+                "lyzr_analysis": None
+            }
+        except Exception as e:
+            error_msg = str(e)
+            error_lower = error_msg.lower()
+            
+            # Check if it's a connection/disconnection/SSL error
+            if any(keyword in error_lower for keyword in ["disconnected", "connection", "ssl", "record layer", "certificate", "tls"]):
+                error_msg = "Apollo API connection was interrupted. Please try again later."
+            elif "timeout" in error_lower:
+                error_msg = "Apollo API request timed out. Please try again later."
+            
+            logger.error(f"Apollo people search by organization failed: {error_msg}")
+            logger.debug(f"Exception details: {type(e).__name__}: {str(e)}")
+            return {
+                "success": False,
+                "error": error_msg,
+                "people": [],
+                "total_results": 0,
+                "lyzr_analysis": None
             }
     
     async def search_organizations(self, company_name: str, domain: Optional[str] = None) -> Dict[str, Any]:
@@ -219,8 +361,8 @@ class ApolloService:
                 "people": []
             }
     
-    async def enrich_ubo_trace_data(self, entity: str, ubo_name: str, 
-                                  location: str, domain: Optional[str] = None) -> Dict[str, Any]:
+    async def enrich_ubo_trace_data(self, entity: str, ubo_name: Optional[str] = None, 
+                                  location: Optional[str] = None, domain: Optional[str] = None) -> Dict[str, Any]:
         """Comprehensive enrichment for UBO trace data"""
         
         logger.info(f"Starting Apollo enrichment for UBO trace: {entity} - {ubo_name}")
@@ -246,13 +388,14 @@ class ApolloService:
                 enrichment_results["enrichment_summary"]["entity_found"] = True
                 enrichment_results["enrichment_summary"]["total_matches"] += len(entity_results["organizations"])
             
-            # Search for the UBO/person
-            ubo_results = await self.search_people(ubo_name, entity, location)
-            enrichment_results["ubo_search"] = ubo_results
-            
-            if ubo_results["success"] and ubo_results["people"]:
-                enrichment_results["enrichment_summary"]["ubo_found"] = True
-                enrichment_results["enrichment_summary"]["total_matches"] += len(ubo_results["people"])
+            # Search for the UBO/person (only if ubo_name is provided)
+            if ubo_name:
+                ubo_results = await self.search_people(ubo_name, entity, location)
+                enrichment_results["ubo_search"] = ubo_results
+                
+                if ubo_results["success"] and ubo_results["people"]:
+                    enrichment_results["enrichment_summary"]["ubo_found"] = True
+                    enrichment_results["enrichment_summary"]["total_matches"] += len(ubo_results["people"])
             
             # If domain provided, search by domain
             if domain:
@@ -436,3 +579,193 @@ class ApolloService:
             logger.error(f"Failed to extract insights: {str(e)}")
         
         return insights
+    
+    async def _analyze_apollo_people_with_lyzr(
+        self, 
+        organization_name: str,
+        people: List[Dict],
+        search_params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze Apollo people search results using Lyzr agent with retry logic"""
+        
+        # Check if Lyzr agent is configured
+        if not self.settings.agent_apollo_people_analysis or not self.settings.session_apollo_people_analysis:
+            logger.warning("Apollo people analysis agent not configured - skipping analysis")
+            return {
+                "success": False,
+                "error": "Apollo people analysis agent not configured",
+                "analysis": None,
+                "raw_response": ""
+            }
+        
+        max_retries = 3
+        retry_delay = 2.0  # Start with 2 seconds, exponential backoff
+        
+        for attempt in range(max_retries + 1):
+            try:
+                headers = {
+                    "Content-Type": "application/json",
+                    "x-api-key": self.settings.lyzr_api_key
+                }
+                
+                # Build message for Lyzr agent
+                message = f"""organization_name: {organization_name}
+
+search_params:
+{json.dumps(search_params, indent=2)}
+
+people:
+{json.dumps(people, indent=2)}"""
+                
+                request_data = {
+                    "user_id": self.settings.lyzr_user_id,
+                    "agent_id": self.settings.agent_apollo_people_analysis,
+                    "session_id": self.settings.session_apollo_people_analysis,
+                    "message": message
+                }
+                
+                if attempt > 0:
+                    logger.info(f"Retry attempt {attempt}/{max_retries} for Lyzr Apollo people analysis: {organization_name}")
+                else:
+                    logger.info(f"Calling Lyzr Apollo people analysis agent for: {organization_name}")
+                
+                logger.info(f"Analyzing {len(people)} people from Apollo")
+                
+                start_time = time.time()
+                # Increase timeout for Lyzr agent calls (60 seconds)
+                timeout = httpx.Timeout(60.0, connect=10.0)
+                
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        self.settings.lyzr_api_url,
+                        headers=headers,
+                        json=request_data
+                    )
+                    response.raise_for_status()
+                    
+                    result = response.json()
+                    
+                    # Extract content from response
+                    content = result.get("response", "")
+                    if not content:
+                        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    if not content:
+                        content = result.get("content", "")
+                    
+                    # Check if we got a valid response
+                    if not content or content.strip() == "":
+                        if attempt < max_retries:
+                            logger.warning(f"Lyzr Apollo people analysis returned empty response (attempt {attempt + 1}/{max_retries + 1}). Retrying in {retry_delay} seconds...")
+                            await asyncio.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                            continue
+                        else:
+                            logger.warning(f"Lyzr Apollo people analysis returned empty response after {max_retries + 1} attempts")
+                            return {
+                                "success": False,
+                                "error": "Lyzr agent returned empty response after retries",
+                                "analysis": None,
+                                "raw_response": ""
+                            }
+                    
+                    processing_time_ms = int((time.time() - start_time) * 1000)
+                    logger.info(f"Lyzr Apollo people analysis completed in {processing_time_ms}ms (attempt {attempt + 1})")
+                    
+                    return {
+                        "success": True,
+                        "analysis": content,
+                        "raw_response": content,
+                        "processing_time_ms": processing_time_ms
+                    }
+                    
+            except httpx.TimeoutException as e:
+                error_msg = "Lyzr agent request timed out. The service may be experiencing high load."
+                logger.error(f"Lyzr Apollo people analysis timeout (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                
+                # Retry on timeout
+                if attempt < max_retries:
+                    logger.info(f"Retrying Lyzr Apollo people analysis in {retry_delay} seconds due to timeout...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "analysis": None,
+                        "raw_response": ""
+                    }
+            except httpx.ConnectError as e:
+                error_msg = "Unable to connect to Lyzr agent. Please check your internet connection."
+                logger.error(f"Lyzr Apollo people analysis connection error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                
+                # Retry on connection errors
+                if attempt < max_retries:
+                    logger.info(f"Retrying Lyzr Apollo people analysis in {retry_delay} seconds due to connection error...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "analysis": None,
+                        "raw_response": ""
+                    }
+            except httpx.HTTPStatusError as e:
+                error_msg = f"HTTP error {e.response.status_code}: {str(e)}"
+                logger.error(f"Lyzr Apollo people analysis failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                
+                # Don't retry on 4xx errors (client errors)
+                if 400 <= e.response.status_code < 500:
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "analysis": None,
+                        "raw_response": ""
+                    }
+                
+                # Retry on 5xx errors (server errors) or network errors
+                if attempt < max_retries:
+                    logger.info(f"Retrying Lyzr Apollo people analysis in {retry_delay} seconds due to error...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "analysis": None,
+                        "raw_response": ""
+                    }
+                    
+            except Exception as e:
+                error_msg = str(e)
+                # Check if it's a connection/disconnection error
+                if "disconnected" in error_msg.lower() or "connection" in error_msg.lower() or "timeout" in error_msg.lower():
+                    error_msg = "Lyzr agent connection was interrupted or timed out. Please try again."
+                
+                logger.error(f"Lyzr Apollo people analysis failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                
+                # If this is not the last attempt, wait before retrying
+                if attempt < max_retries:
+                    logger.info(f"Retrying Lyzr Apollo people analysis in {retry_delay} seconds due to error...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    # Final attempt failed
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "analysis": None,
+                        "raw_response": ""
+                    }
+        
+        # This should never be reached, but just in case
+        return {
+            "success": False,
+            "error": "Lyzr Apollo people analysis failed after all retries",
+            "analysis": None,
+            "raw_response": ""
+        }

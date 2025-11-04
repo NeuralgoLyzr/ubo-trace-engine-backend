@@ -65,3 +65,7 @@ def get_database() -> AsyncIOMotorDatabase:
     if db.database is None:
         raise Exception("Database not initialized. Call connect_to_mongo() first.")
     return db.database
+
+def is_database_available() -> bool:
+    """Check if database is available"""
+    return db.database is not None and db.client is not None
