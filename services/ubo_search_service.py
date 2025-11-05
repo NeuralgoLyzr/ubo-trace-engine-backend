@@ -420,21 +420,43 @@ class UBOSearchService:
                 if "candidates" in data and isinstance(data["candidates"], list):
                     data = data["candidates"]
                 # If data is a dict with other keys, try to extract candidates
-                elif "candidate" in data or "evidence" in data:
+                elif "candidate" in data or "ubo_name" in data or "name" in data or "evidence" in data:
                     # Single candidate as dict
                     data = [data]
             
             if isinstance(data, list):
                 for item in data:
                     if isinstance(item, dict):
-                        candidate_name = item.get("candidate", "")
+                        # Try multiple possible field names for candidate name
+                        candidate_name = (
+                            item.get("candidate") or 
+                            item.get("ubo_name") or 
+                            item.get("name") or 
+                            item.get("candidate_name") or
+                            ""
+                        )
                         # Only add if candidate name is not empty
                         if candidate_name and candidate_name.strip():
+                            # Parse ubo_type enum
+                            ubo_type_value = item.get("ubo_type")
+                            ubo_type = None
+                            if ubo_type_value:
+                                try:
+                                    from models.schemas import UBOType
+                                    # Handle both string and enum values
+                                    if isinstance(ubo_type_value, str):
+                                        ubo_type = UBOType(ubo_type_value)
+                                    else:
+                                        ubo_type = ubo_type_value
+                                except (ValueError, TypeError):
+                                    logger.warning(f"Invalid ubo_type value: {ubo_type_value}, expected 'Control' or 'Ownership'")
+                            
                             candidates.append(CrossVerifyCandidate(
                                 candidate=candidate_name.strip(),
                                 evidence=item.get("evidence"),
                                 source_url=item.get("source_url"),
-                                confidence=item.get("confidence")
+                                confidence=item.get("confidence"),
+                                ubo_type=ubo_type
                             ))
         except Exception as e:
             logger.warning(f"Could not parse cross-verify candidates: {str(e)}")

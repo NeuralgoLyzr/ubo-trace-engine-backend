@@ -216,12 +216,18 @@ class UBOCandidate(BaseModel):
     rationale: Optional[str] = None
     source_url: Optional[str] = None
 
+class UBOType(str, Enum):
+    """UBO Type enumeration"""
+    CONTROL = "Control"
+    OWNERSHIP = "Ownership"
+
 class CrossVerifyCandidate(BaseModel):
     """Cross-verified UBO candidate"""
     candidate: str
     evidence: Optional[str] = None
     source_url: Optional[str] = None
     confidence: Optional[str] = None  # "High", "Medium", or "Low"
+    ubo_type: Optional[UBOType] = None  # "Control" or "Ownership"
 
 class RegistryPage(BaseModel):
     """Registry or verification page"""
