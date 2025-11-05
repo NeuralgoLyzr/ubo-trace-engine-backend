@@ -10,7 +10,8 @@ from models.schemas import (
     UBOTraceRequest, UBOTraceResponse, TraceSummary, TraceStageResult,
     BatchTraceRequest, BatchTraceResponse, HealthCheck,
     CompanyDomainAnalysisRequest, CompanyDomainAnalysisResponse,
-    UBOSearchRequest, UBOSearchResponse, ApolloPeopleSearchRequest
+    UBOSearchRequest, UBOSearchResponse, ApolloPeopleSearchRequest,
+    CandidateUBOAnalysisRequest, CandidateUBOAnalysisResponse
 )
 from services.ubo_trace_service import UBOTraceService
 from utils.database import get_database, is_database_available
@@ -436,6 +437,233 @@ async def search_csuite_standalone(
         
     except Exception as e:
         logger.error(f"Failed to search C-suite: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/analyze-candidate-ubo", response_model=CandidateUBOAnalysisResponse)
+async def analyze_candidate_ubo(request: CandidateUBOAnalysisRequest):
+    """Analyze a candidate to find Ultimate Beneficial Owners with retry mechanism"""
+    import json
+    import asyncio
+    import time
+    from services.lyzr_service import LyzrAgentService
+    from utils.settings import settings
+    
+    # Retry configuration
+    max_retries = 2  # Reduced from 3 to 2 (3 total attempts instead of 4)
+    retry_delay = 3  # Reduced from 5 to 3 seconds
+    start_time = time.time()
+    
+    try:
+        # Initialize Lyzr service
+        lyzr_service = LyzrAgentService()
+        
+        # Get agent configuration from settings
+        agent_id = settings.agent_candidate_ubo_analysis
+        session_id = settings.session_candidate_ubo_analysis
+        
+        if not agent_id or not session_id:
+            raise HTTPException(
+                status_code=500,
+                detail="Candidate UBO analysis agent not configured. Please set AGENT_CANDIDATE_UBO_ANALYSIS and SESSION_CANDIDATE_UBO_ANALYSIS in .env"
+            )
+        
+        # Format message as JSON string as shown in the example
+        message = f'{{"candidate": "{request.candidate}"}}'
+        
+        logger.info(f"Analyzing candidate UBO for: {request.candidate}")
+        
+        # Retry loop
+        last_error = None
+        for attempt in range(max_retries + 1):  # 0, 1, 2, 3 (total 4 attempts)
+            is_retry = attempt > 0
+            
+            try:
+                if is_retry:
+                    logger.info(f"Retry attempt {attempt} for candidate UBO analysis (candidate: {request.candidate})")
+                    await asyncio.sleep(retry_delay)
+                
+                # Call the Lyzr agent with longer timeout for candidate analysis
+                # Use 120 seconds timeout to allow for complex analysis
+                response = await lyzr_service.call_custom_agent(
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    message=message,
+                    timeout=120  # 2 minutes per attempt
+                )
+                
+                if not response.success:
+                    error_msg = response.error or "Unknown error from Lyzr agent"
+                    logger.warning(f"Lyzr agent call failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                    last_error = error_msg
+                    
+                    # Retry if not the last attempt
+                    if attempt < max_retries:
+                        continue
+                    else:
+                        processing_time = int((time.time() - start_time) * 1000)
+                        return CandidateUBOAnalysisResponse(
+                            success=False,
+                            error=error_msg,
+                            processing_time_ms=processing_time
+                        )
+                
+                if not response.content:
+                    logger.warning(f"Empty response content from Lyzr agent (attempt {attempt + 1}/{max_retries + 1})")
+                    last_error = "Empty response from Lyzr agent"
+                    
+                    # Retry if not the last attempt
+                    if attempt < max_retries:
+                        continue
+                    else:
+                        processing_time = int((time.time() - start_time) * 1000)
+                        return CandidateUBOAnalysisResponse(
+                            success=False,
+                            error="Empty response from Lyzr agent",
+                            processing_time_ms=processing_time
+                        )
+                
+                # Parse the response content
+                ubos = []
+                unresolved_candidates = []
+                
+                try:
+                    # Try to parse JSON response
+                    # First, try to extract JSON from markdown code blocks if present
+                    content = response.content.strip()
+                    if content.startswith("```"):
+                        # Extract JSON from markdown code block
+                        lines = content.split("\n")
+                        json_start = None
+                        json_end = None
+                        for i, line in enumerate(lines):
+                            if line.strip().startswith("```") and json_start is None:
+                                json_start = i + 1
+                            elif line.strip().startswith("```") and json_start is not None:
+                                json_end = i
+                                break
+                        if json_start is not None and json_end is not None:
+                            content = "\n".join(lines[json_start:json_end])
+                    
+                    parsed_content = json.loads(content)
+                    
+                    # Extract UBOs
+                    if isinstance(parsed_content, dict):
+                        ubos_data = parsed_content.get("ubos", [])
+                        for ubo_data in ubos_data:
+                            if isinstance(ubo_data, dict):
+                                from models.schemas import UBOAnalysisResult, ResolutionChainItem
+                                
+                                # Parse resolution chain
+                                resolution_chain = []
+                                chain_data = ubo_data.get("resolution_chain", [])
+                                for chain_item in chain_data:
+                                    if isinstance(chain_item, dict):
+                                        resolution_chain.append(ResolutionChainItem(
+                                            entity_name=chain_item.get("entity_name", ""),
+                                            entity_type=chain_item.get("entity_type", ""),
+                                            relation=chain_item.get("relation", ""),
+                                            level=chain_item.get("level", 0)
+                                        ))
+                                
+                                # Create UBO analysis result
+                                ubo_result = UBOAnalysisResult(
+                                    ubo_name=ubo_data.get("ubo_name", ""),
+                                    ubo_type=ubo_data.get("ubo_type", ""),
+                                    control_mechanism=ubo_data.get("control_mechanism", ""),
+                                    resolution_chain=resolution_chain,
+                                    rationale=ubo_data.get("rationale", ""),
+                                    source_url=ubo_data.get("source_url", []),
+                                    confidence=ubo_data.get("confidence", "Medium")
+                                )
+                                ubos.append(ubo_result)
+                        
+                        # Extract unresolved candidates
+                        unresolved_candidates = parsed_content.get("unresolved_candidates", [])
+                        
+                        # Successfully parsed the response
+                        processing_time = int((time.time() - start_time) * 1000)
+                        logger.info(f"Candidate UBO analysis completed (attempt {attempt + 1}): found {len(ubos)} UBOs, {len(unresolved_candidates)} unresolved candidates")
+                        
+                        return CandidateUBOAnalysisResponse(
+                            success=True,
+                            ubos=ubos,
+                            unresolved_candidates=unresolved_candidates,
+                            processing_time_ms=processing_time
+                        )
+                    else:
+                        logger.warning(f"Parsed content is not a dict: {type(parsed_content)}")
+                        last_error = f"Unexpected response format: {type(parsed_content)}"
+                        
+                        # Retry if not the last attempt
+                        if attempt < max_retries:
+                            continue
+                        else:
+                            processing_time = int((time.time() - start_time) * 1000)
+                            return CandidateUBOAnalysisResponse(
+                                success=False,
+                                error=f"Unexpected response format: {type(parsed_content)}",
+                                processing_time_ms=processing_time
+                            )
+                        
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse JSON response (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                    logger.warning(f"Raw content (first 500 chars): {response.content[:500]}")
+                    last_error = f"Failed to parse JSON response: {str(e)}"
+                    
+                    # Retry if not the last attempt
+                    if attempt < max_retries:
+                        continue
+                    else:
+                        processing_time = int((time.time() - start_time) * 1000)
+                        return CandidateUBOAnalysisResponse(
+                            success=False,
+                            error=f"Failed to parse JSON response after {max_retries + 1} attempts: {str(e)}. Response may not be in expected format.",
+                            processing_time_ms=processing_time
+                        )
+                except (KeyError, TypeError) as e:
+                    logger.warning(f"Failed to extract data from response (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                    last_error = f"Failed to extract data from response: {str(e)}"
+                    
+                    # Retry if not the last attempt
+                    if attempt < max_retries:
+                        continue
+                    else:
+                        processing_time = int((time.time() - start_time) * 1000)
+                        return CandidateUBOAnalysisResponse(
+                            success=False,
+                            error=f"Failed to extract data from response after {max_retries + 1} attempts: {str(e)}",
+                            processing_time_ms=processing_time
+                        )
+                    
+            except Exception as e:
+                logger.error(f"Candidate UBO analysis failed (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                last_error = str(e)
+                
+                # Retry if not the last attempt
+                if attempt < max_retries:
+                    logger.info(f"Retrying candidate UBO analysis in {retry_delay} seconds due to error...")
+                    continue
+                else:
+                    # Final attempt failed
+                    processing_time = int((time.time() - start_time) * 1000)
+                    return CandidateUBOAnalysisResponse(
+                        success=False,
+                        error=f"Failed after {max_retries + 1} attempts: {str(e)}",
+                        processing_time_ms=processing_time
+                    )
+        
+        # This should never be reached, but just in case
+        processing_time = int((time.time() - start_time) * 1000)
+        return CandidateUBOAnalysisResponse(
+            success=False,
+            error=last_error or "Unexpected error in retry loop",
+            processing_time_ms=processing_time
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to analyze candidate UBO: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/health", response_model=HealthCheck)

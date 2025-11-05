@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     agent_apollo_people_analysis: str = ""  # Required - must be set in .env
     session_apollo_people_analysis: str = ""  # Required - must be set in .env
     
+    # Candidate UBO Analysis Agent
+    agent_candidate_ubo_analysis: str = ""  # Required - must be set in .env
+    session_candidate_ubo_analysis: str = ""  # Required - must be set in .env
+    
     # Apollo.io API settings
     apollo_api_key: str = ""  # Required - must be set in .env
     apollo_base_url: str = "https://api.apollo.io/v1"
@@ -122,6 +126,8 @@ class Settings(BaseSettings):
             'session_ubo_ownership_analysis',
             'agent_apollo_people_analysis',
             'session_apollo_people_analysis',
+            'agent_candidate_ubo_analysis',
+            'session_candidate_ubo_analysis',
             'apollo_api_key'
         ]
         

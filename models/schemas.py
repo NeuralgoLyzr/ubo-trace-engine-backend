@@ -277,3 +277,34 @@ class ApolloPeopleSearchRequest(BaseModel):
     person_titles: Optional[List[str]] = Field(None, description="Optional list of person titles (e.g., CEO, CTO, CFO, VP, Director)")
     domains: Optional[List[str]] = Field(None, description="Optional list of domains")
     locations: Optional[List[str]] = Field(None, description="Optional list of locations")
+
+# Candidate UBO Analysis Models
+class ResolutionChainItem(BaseModel):
+    """Resolution chain item in UBO analysis"""
+    entity_name: str
+    entity_type: str
+    relation: str
+    level: int
+
+class UBOAnalysisResult(BaseModel):
+    """UBO analysis result"""
+    ubo_name: str
+    ubo_type: str
+    control_mechanism: str
+    resolution_chain: List[ResolutionChainItem]
+    rationale: str
+    source_url: List[str]
+    confidence: str  # "High", "Medium", or "Low"
+
+class CandidateUBOAnalysisRequest(BaseModel):
+    """Request model for candidate UBO analysis"""
+    candidate: str = Field(..., description="Candidate name (e.g., 'Kobbie Holdco Limited')")
+
+class CandidateUBOAnalysisResponse(BaseModel):
+    """Response model for candidate UBO analysis"""
+    success: bool
+    ubos: List[UBOAnalysisResult] = Field(default_factory=list)
+    unresolved_candidates: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    processing_time_ms: Optional[int] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)

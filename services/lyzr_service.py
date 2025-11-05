@@ -393,3 +393,80 @@ class LyzrAgentService:
             error="Unexpected error in retry loop",
             processing_time_ms=processing_time
         )
+    
+    async def call_custom_agent(self, agent_id: str, session_id: str, message: str, timeout: Optional[int] = None) -> LyzrAgentResponse:
+        """Call a Lyzr AI agent with custom agent_id and session_id
+        
+        Args:
+            agent_id: The agent ID to call
+            session_id: The session ID to use
+            message: The message to send
+            timeout: Optional timeout in seconds (defaults to settings.api_timeout, or 120 for candidate analysis)
+        """
+        
+        start_time = time.time()
+        
+        # Use provided timeout or default, with longer timeout for complex operations
+        request_timeout = timeout or self.timeout or 120
+        
+        try:
+            request_data = LyzrAgentRequest(
+                user_id=self.user_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                message=message
+            )
+            
+            logger.info(f"Sending request to custom Lyzr agent: {agent_id}")
+            logger.info(f"Message: {message}")
+            logger.info(f"Timeout: {request_timeout}s")
+            
+            headers = {
+                "Content-Type": "application/json",
+                "x-api-key": self.api_key
+            }
+            
+            async with httpx.AsyncClient(timeout=request_timeout) as client:
+                response = await client.post(
+                    self.api_url,
+                    headers=headers,
+                    json=request_data.dict()
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                logger.info(f"Full response structure: {list(result.keys())}")
+                
+                # Try different response formats
+                content = result.get("response", "")
+                if not content:
+                    # Fallback to OpenAI-style format
+                    content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if not content:
+                    # Try direct content field
+                    content = result.get("content", "")
+                
+                processing_time = int((time.time() - start_time) * 1000)
+                
+                logger.info(f"Custom Lyzr agent completed in {processing_time}ms")
+                logger.info(f"Response content length: {len(content)} chars")
+                if content:
+                    logger.info(f"Response preview: {content[:200]}...")
+                else:
+                    logger.warning(f"Empty response from custom Lyzr agent")
+                
+                return LyzrAgentResponse(
+                    success=True,
+                    content=content,
+                    processing_time_ms=processing_time
+                )
+                
+        except Exception as e:
+            processing_time = int((time.time() - start_time) * 1000)
+            logger.error(f"Custom Lyzr agent failed: {str(e)}")
+            
+            return LyzrAgentResponse(
+                success=False,
+                error=str(e),
+                processing_time_ms=processing_time
+            )
