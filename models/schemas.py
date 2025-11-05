@@ -314,3 +314,29 @@ class CandidateUBOAnalysisResponse(BaseModel):
     error: Optional[str] = None
     processing_time_ms: Optional[int] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+# UBO Verification Models
+class UBOVerificationRequest(BaseModel):
+    """Request model for UBO verification"""
+    ubo_name: str = Field(..., description="UBO name (required)")
+    company_name: str = Field(..., description="Company name (required)")
+    location: Optional[str] = Field(None, description="Location (optional)")
+    context: Optional[str] = Field(None, description="Additional context (optional)")
+
+class UBOVerificationResult(BaseModel):
+    """Single UBO verification result"""
+    holding: Optional[str] = Field(None, description="Share holding percentage or type of control or designation")
+    ubo_type: Optional[UBOType] = Field(None, description="Type of UBO: Ownership or Control")
+    evidence: Optional[str] = Field(None, description="Supporting evidence/fact")
+    source_url: Optional[str] = Field(None, description="Source URL")
+    confidence: Optional[str] = Field(None, description="Confidence level: High, Medium, or Low")
+    age: Optional[str] = Field(None, description="Age of UBO")
+    nationality: Optional[str] = Field(None, description="Nationality of UBO")
+
+class UBOVerificationResponse(BaseModel):
+    """Response model for UBO verification"""
+    success: bool
+    results: List[UBOVerificationResult] = Field(default_factory=list, description="List of verification results")
+    error: Optional[str] = None
+    processing_time_ms: Optional[int] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)

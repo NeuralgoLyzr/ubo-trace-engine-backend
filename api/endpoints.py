@@ -11,7 +11,8 @@ from models.schemas import (
     BatchTraceRequest, BatchTraceResponse, HealthCheck,
     CompanyDomainAnalysisRequest, CompanyDomainAnalysisResponse,
     UBOSearchRequest, UBOSearchResponse, ApolloPeopleSearchRequest,
-    CandidateUBOAnalysisRequest, CandidateUBOAnalysisResponse
+    CandidateUBOAnalysisRequest, CandidateUBOAnalysisResponse,
+    UBOVerificationRequest, UBOVerificationResponse
 )
 from services.ubo_trace_service import UBOTraceService
 from utils.database import get_database, is_database_available
@@ -664,6 +665,246 @@ async def analyze_candidate_ubo(request: CandidateUBOAnalysisRequest):
         raise
     except Exception as e:
         logger.error(f"Failed to analyze candidate UBO: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/verify-ubo", response_model=UBOVerificationResponse)
+async def verify_ubo(request: UBOVerificationRequest):
+    """Verify UBO details including shareholding, age, nationality, evidence, and source URL"""
+    import json
+    import asyncio
+    import time
+    from services.lyzr_service import LyzrAgentService
+    from utils.settings import settings
+    from models.schemas import UBOType
+    
+    # Retry configuration
+    max_retries = 2
+    retry_delay = 3
+    start_time = time.time()
+    
+    try:
+        # Initialize Lyzr service
+        lyzr_service = LyzrAgentService()
+        
+        # Get agent configuration from settings
+        agent_id = settings.agent_ubo_verification
+        session_id = settings.session_ubo_verification
+        
+        if not agent_id or not session_id:
+            raise HTTPException(
+                status_code=500,
+                detail="UBO verification agent not configured. Please set AGENT_UBO_VERIFICATION and SESSION_UBO_VERIFICATION in .env"
+            )
+        
+        # Format message as JSON string with all parameters
+        message_parts = {
+            "ubo_name": request.ubo_name,
+            "company_name": request.company_name
+        }
+        if request.location:
+            message_parts["location"] = request.location
+        if request.context:
+            message_parts["context"] = request.context
+        
+        message = json.dumps(message_parts)
+        
+        logger.info(f"Verifying UBO: {request.ubo_name} for company: {request.company_name}")
+        
+        # Retry loop
+        last_error = None
+        for attempt in range(max_retries + 1):
+            is_retry = attempt > 0
+            
+            try:
+                if is_retry:
+                    logger.info(f"Retry attempt {attempt} for UBO verification (UBO: {request.ubo_name}, Company: {request.company_name})")
+                    await asyncio.sleep(retry_delay)
+                
+                # Call the Lyzr agent with longer timeout for verification
+                response = await lyzr_service.call_custom_agent(
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    message=message,
+                    timeout=120  # 2 minutes per attempt
+                )
+                
+                if not response.success:
+                    error_msg = response.error or "Unknown error from Lyzr agent"
+                    logger.warning(f"Lyzr agent call failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                    last_error = error_msg
+                    
+                    # Retry if not the last attempt
+                    if attempt < max_retries:
+                        continue
+                    else:
+                        processing_time = int((time.time() - start_time) * 1000)
+                        return UBOVerificationResponse(
+                            success=False,
+                            error=error_msg,
+                            processing_time_ms=processing_time
+                        )
+                
+                if not response.content:
+                    logger.warning(f"Empty response content from Lyzr agent (attempt {attempt + 1}/{max_retries + 1})")
+                    last_error = "Empty response from Lyzr agent"
+                    
+                    # Retry if not the last attempt
+                    if attempt < max_retries:
+                        continue
+                    else:
+                        processing_time = int((time.time() - start_time) * 1000)
+                        return UBOVerificationResponse(
+                            success=False,
+                            error="Empty response from Lyzr agent",
+                            processing_time_ms=processing_time
+                        )
+                
+                # Parse the response content
+                try:
+                    # Try to parse JSON response
+                    # First, try to extract JSON from markdown code blocks if present
+                    content = response.content.strip()
+                    if content.startswith("```"):
+                        # Extract JSON from markdown code block
+                        lines = content.split("\n")
+                        json_start = None
+                        json_end = None
+                        for i, line in enumerate(lines):
+                            if line.strip().startswith("```") and json_start is None:
+                                json_start = i + 1
+                            elif line.strip().startswith("```") and json_start is not None:
+                                json_end = i
+                                break
+                        if json_start is not None and json_end is not None:
+                            content = "\n".join(lines[json_start:json_end])
+                    
+                    parsed_content = json.loads(content)
+                    
+                    # Extract verification data
+                    if isinstance(parsed_content, dict):
+                        # Handle new response format with results array
+                        results_data = parsed_content.get("results", [])
+                        if not results_data and isinstance(parsed_content.get("results"), list):
+                            results_data = parsed_content["results"]
+                        
+                        # If results is not an array, try to extract from root level
+                        if not isinstance(results_data, list):
+                            # Check if the data itself is a result object
+                            if isinstance(parsed_content, dict) and any(key in parsed_content for key in ["holding", "ubo_type", "evidence"]):
+                                results_data = [parsed_content]
+                            else:
+                                results_data = []
+                        
+                        from models.schemas import UBOVerificationResult
+                        verification_results = []
+                        
+                        for result_item in results_data:
+                            if isinstance(result_item, dict):
+                                # Parse ubo_type enum if present
+                                ubo_type_value = result_item.get("ubo_type")
+                                ubo_type = None
+                                if ubo_type_value:
+                                    try:
+                                        if isinstance(ubo_type_value, str):
+                                            ubo_type = UBOType(ubo_type_value)
+                                        else:
+                                            ubo_type = ubo_type_value
+                                    except (ValueError, TypeError):
+                                        logger.warning(f"Invalid ubo_type value: {ubo_type_value}, expected 'Control' or 'Ownership'")
+                                
+                                verification_results.append(UBOVerificationResult(
+                                    holding=result_item.get("Holding") or result_item.get("holding"),
+                                    ubo_type=ubo_type,
+                                    evidence=result_item.get("evidence"),
+                                    source_url=result_item.get("source_url"),
+                                    confidence=result_item.get("confidence"),
+                                    age=result_item.get("age"),
+                                    nationality=result_item.get("nationality")
+                                ))
+                        
+                        # Successfully parsed the response
+                        processing_time = int((time.time() - start_time) * 1000)
+                        logger.info(f"UBO verification completed (attempt {attempt + 1}): {request.ubo_name} for {request.company_name}, found {len(verification_results)} results")
+                        
+                        return UBOVerificationResponse(
+                            success=True,
+                            results=verification_results,
+                            processing_time_ms=processing_time
+                        )
+                    else:
+                        logger.warning(f"Parsed content is not a dict: {type(parsed_content)}")
+                        last_error = f"Unexpected response format: {type(parsed_content)}"
+                        
+                        # Retry if not the last attempt
+                        if attempt < max_retries:
+                            continue
+                        else:
+                            processing_time = int((time.time() - start_time) * 1000)
+                            return UBOVerificationResponse(
+                                success=False,
+                                error=f"Unexpected response format: {type(parsed_content)}",
+                                processing_time_ms=processing_time
+                            )
+                        
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse JSON response (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                    logger.warning(f"Raw content (first 500 chars): {response.content[:500]}")
+                    last_error = f"Failed to parse JSON response: {str(e)}"
+                    
+                    # Retry if not the last attempt
+                    if attempt < max_retries:
+                        continue
+                    else:
+                        processing_time = int((time.time() - start_time) * 1000)
+                        return UBOVerificationResponse(
+                            success=False,
+                            error=f"Failed to parse JSON response after {max_retries + 1} attempts: {str(e)}. Response may not be in expected format.",
+                            processing_time_ms=processing_time
+                        )
+                except (KeyError, TypeError) as e:
+                    logger.warning(f"Failed to extract data from response (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                    last_error = f"Failed to extract data from response: {str(e)}"
+                    
+                    # Retry if not the last attempt
+                    if attempt < max_retries:
+                        continue
+                    else:
+                        processing_time = int((time.time() - start_time) * 1000)
+                        return UBOVerificationResponse(
+                            success=False,
+                            error=f"Failed to extract data from response after {max_retries + 1} attempts: {str(e)}",
+                            processing_time_ms=processing_time
+                        )
+                    
+            except Exception as e:
+                logger.error(f"UBO verification failed (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                last_error = str(e)
+                
+                # Retry if not the last attempt
+                if attempt < max_retries:
+                    logger.info(f"Retrying UBO verification in {retry_delay} seconds due to error...")
+                    continue
+                else:
+                    # Final attempt failed
+                    processing_time = int((time.time() - start_time) * 1000)
+                    return UBOVerificationResponse(
+                        success=False,
+                        error=f"Failed after {max_retries + 1} attempts: {str(e)}",
+                        processing_time_ms=processing_time
+                    )
+        
+        # This should never be reached, but just in case
+        processing_time = int((time.time() - start_time) * 1000)
+        return UBOVerificationResponse(
+            success=False,
+            error=last_error or "Unexpected error in retry loop",
+            processing_time_ms=processing_time
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to verify UBO: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/health", response_model=HealthCheck)
