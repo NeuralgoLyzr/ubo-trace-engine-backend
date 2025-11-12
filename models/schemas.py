@@ -221,6 +221,13 @@ class UBOType(str, Enum):
     CONTROL = "Control"
     OWNERSHIP = "Ownership"
 
+class TraceChainItem(BaseModel):
+    """Item in the trace chain showing the path to a natural person"""
+    entity_name: str
+    entity_type: str  # "Company", "Corporate Entity", "Natural Person"
+    depth: int
+    relation: Optional[str] = None  # How this entity relates to the previous one
+
 class CrossVerifyCandidate(BaseModel):
     """Cross-verified UBO candidate"""
     candidate: str
@@ -228,6 +235,8 @@ class CrossVerifyCandidate(BaseModel):
     source_url: Optional[str] = None
     confidence: Optional[str] = None  # "High", "Medium", or "Low"
     ubo_type: Optional[UBOType] = None  # "Control" or "Ownership"
+    relation: Optional[str] = None  # How this candidate relates to the company
+    trace_chain: Optional[List[TraceChainItem]] = Field(default_factory=list, description="Trace chain showing the path from original company to this natural person")
 
 class RegistryPage(BaseModel):
     """Registry or verification page"""
@@ -337,6 +346,54 @@ class UBOVerificationResponse(BaseModel):
     """Response model for UBO verification"""
     success: bool
     results: List[UBOVerificationResult] = Field(default_factory=list, description="List of verification results")
+    error: Optional[str] = None
+    processing_time_ms: Optional[int] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+# UK Companies House PSC Search Models
+class UKPSCSearchRequest(BaseModel):
+    """Request model for UK PSC search"""
+    company_name: str = Field(..., description="Company name to search for")
+
+class NaturalPSCResult(BaseModel):
+    """Natural person PSC result"""
+    name: str
+    identification: Dict[str, Any] = Field(default_factory=dict)
+    address: Dict[str, Any] = Field(default_factory=dict)
+    age: Optional[int] = None
+    nationality: Optional[str] = None
+    country_of_residence: Optional[str] = None
+    natures_of_control: List[str] = Field(default_factory=list)
+    company_number: Optional[str] = None
+    iteration: int = Field(description="Number of iterations to find this natural person")
+
+class UKPSCSearchResponse(BaseModel):
+    """Response model for UK PSC search"""
+    success: bool
+    natural_psc: Optional[NaturalPSCResult] = None
+    error: Optional[str] = None
+    processing_time_ms: Optional[int] = None
+    iterations: int = Field(default=0, description="Number of iterations performed")
+    lyzr_input_message: Optional[str] = Field(None, description="Input message sent to Lyzr agent for verification")
+    lyzr_response: Optional[str] = Field(None, description="Raw response from Lyzr agent")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class RecursiveNaturalPSCSearchRequest(BaseModel):
+    """Request model for recursive natural PSC search"""
+    company_name: str = Field(..., description="Company name to search for natural PSC")
+    domain: Optional[str] = Field(None, description="Company domain")
+    location: Optional[str] = Field(None, description="Company location")
+    max_depth: int = Field(default=3, description="Maximum recursion depth")
+
+class RecursiveNaturalPSCSearchResponse(BaseModel):
+    """Response model for recursive natural PSC search"""
+    success: bool
+    natural_psc_candidates: List[CrossVerifyCandidate] = Field(default_factory=list, description="List of natural PSC candidates found")
+    unresolved_companies: List[str] = Field(default_factory=list, description="List of companies that were processed but found 0 natural PSCs")
+    total_processed: int = Field(default=0, description="Total candidates processed")
+    total_found: int = Field(default=0, description="Total natural PSC candidates found")
+    additional_agent_result: Optional[str] = Field(None, description="Result from additional parallel Lyzr agent call")
+    additional_agent_success: bool = Field(default=False, description="Whether additional agent call was successful")
     error: Optional[str] = None
     processing_time_ms: Optional[int] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)

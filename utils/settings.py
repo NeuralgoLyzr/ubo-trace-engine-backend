@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     agent_ubo_verification: str = ""  # Required - must be set in .env
     session_ubo_verification: str = ""  # Required - must be set in .env
     
+    # UK PSC Natural Person Verification Agent
+    agent_psc_natural_person: str = ""  # Required - must be set in .env
+    session_psc_natural_person: str = ""  # Required - must be set in .env
+    
+    # UK Companies House API settings
+    companies_house_api_key: str = ""  # Required - must be set in .env
+    
     # Apollo.io API settings
     apollo_api_key: str = ""  # Required - must be set in .env
     apollo_base_url: str = "https://api.apollo.io/v1"
@@ -81,7 +88,7 @@ class Settings(BaseSettings):
     searchapi_timeout: int = 30
     
     # API settings
-    api_timeout: int = 60
+    api_timeout: int = 180  # Increased from 60 to 180 seconds for complex recursive searches
     max_retries: int = 3
     retry_delay: float = 5.0
     

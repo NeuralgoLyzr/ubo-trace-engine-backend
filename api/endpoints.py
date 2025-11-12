@@ -12,7 +12,10 @@ from models.schemas import (
     CompanyDomainAnalysisRequest, CompanyDomainAnalysisResponse,
     UBOSearchRequest, UBOSearchResponse, ApolloPeopleSearchRequest,
     CandidateUBOAnalysisRequest, CandidateUBOAnalysisResponse,
-    UBOVerificationRequest, UBOVerificationResponse
+    UBOVerificationRequest, UBOVerificationResponse,
+    UKPSCSearchRequest, UKPSCSearchResponse, NaturalPSCResult,
+    RecursiveNaturalPSCSearchRequest, RecursiveNaturalPSCSearchResponse,
+    CrossVerifyCandidate
 )
 from services.ubo_trace_service import UBOTraceService
 from utils.database import get_database, is_database_available
@@ -484,12 +487,12 @@ async def analyze_candidate_ubo(request: CandidateUBOAnalysisRequest):
                     await asyncio.sleep(retry_delay)
                 
                 # Call the Lyzr agent with longer timeout for candidate analysis
-                # Use 120 seconds timeout to allow for complex analysis
+                # Use 180 seconds timeout to allow for complex analysis
                 response = await lyzr_service.call_custom_agent(
                     agent_id=agent_id,
                     session_id=session_id,
                     message=message,
-                    timeout=120  # 2 minutes per attempt
+                    timeout=180  # 3 minutes per attempt
                 )
                 
                 if not response.success:
@@ -578,8 +581,28 @@ async def analyze_candidate_ubo(request: CandidateUBOAnalysisRequest):
                                 )
                                 ubos.append(ubo_result)
                         
-                        # Extract unresolved candidates
-                        unresolved_candidates = parsed_content.get("unresolved_candidates", [])
+                        # Extract unresolved candidates and convert to list of strings
+                        unresolved_candidates_raw = parsed_content.get("unresolved_candidates", [])
+                        unresolved_candidates = []
+                        
+                        for item in unresolved_candidates_raw:
+                            if isinstance(item, str):
+                                # Already a string, use as-is
+                                unresolved_candidates.append(item)
+                            elif isinstance(item, dict):
+                                # Extract candidate name from dict
+                                # Try common field names: 'candidate', 'name', 'ubo_name', etc.
+                                candidate_name = (
+                                    item.get("candidate") or 
+                                    item.get("name") or 
+                                    item.get("ubo_name") or 
+                                    item.get("candidate_name") or
+                                    str(item)  # Fallback to string representation
+                                )
+                                unresolved_candidates.append(candidate_name)
+                            else:
+                                # Convert other types to string
+                                unresolved_candidates.append(str(item))
                         
                         # Successfully parsed the response
                         processing_time = int((time.time() - start_time) * 1000)
@@ -906,6 +929,453 @@ async def verify_ubo(request: UBOVerificationRequest):
     except Exception as e:
         logger.error(f"Failed to verify UBO: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/recursive-natural-psc-search", response_model=RecursiveNaturalPSCSearchResponse)
+async def recursive_natural_psc_search(request: RecursiveNaturalPSCSearchRequest):
+    """Recursively find natural PSC candidates starting from company name"""
+    import time
+    import asyncio
+    from services.ubo_search_service import UBOSearchService
+    from services.lyzr_service import LyzrAgentService
+    
+    start_time = time.time()
+    
+    try:
+        ubo_search_service = UBOSearchService()
+        lyzr_service = LyzrAgentService()
+        
+        logger.info("=" * 80)
+        logger.info("STARTING RECURSIVE NATURAL PSC SEARCH")
+        logger.info(f"Company Name: {request.company_name}")
+        logger.info(f"Domain: {request.domain}")
+        logger.info(f"Location: {request.location}")
+        logger.info(f"Max Depth: {request.max_depth}")
+        logger.info("=" * 80)
+        
+        # Prepare message for additional agent
+        additional_agent_message = f"company_name: {request.company_name}"
+        if request.domain:
+            additional_agent_message += f", domain: {request.domain}"
+        if request.location:
+            additional_agent_message += f", location: {request.location}"
+        
+        # Additional agent configuration
+        additional_agent_id = "690a53615d0b2c241317a4d6"
+        additional_session_id = "690a53615d0b2c241317a4d6-l3tgice9tee"
+        
+        logger.info("=" * 80)
+        logger.info("CALLING RECURSIVE SEARCH AND ADDITIONAL AGENT IN PARALLEL")
+        logger.info(f"Additional Agent ID: {additional_agent_id}")
+        logger.info(f"Additional Agent Message: {additional_agent_message}")
+        logger.info("=" * 80)
+        
+        # Run both operations in parallel
+        async def run_recursive_search():
+            """Run the recursive natural PSC search"""
+            return await ubo_search_service._find_natural_psc_recursive(
+                request.company_name,
+                request.company_name,  # original_company_name is the same as starting point
+                domain=request.domain,
+                location=request.location,
+                max_depth=request.max_depth
+            )
+        
+        async def run_additional_agent():
+            """Run the additional Lyzr agent in parallel"""
+            try:
+                response = await lyzr_service.call_custom_agent(
+                    agent_id=additional_agent_id,
+                    session_id=additional_session_id,
+                    message=additional_agent_message,
+                    timeout=180  # Use same timeout as other calls
+                )
+                return response
+            except Exception as e:
+                logger.error(f"Additional agent call failed: {str(e)}")
+                return None
+        
+        # Execute both in parallel
+        natural_psc_candidates, additional_agent_response = await asyncio.gather(
+            run_recursive_search(),
+            run_additional_agent(),
+            return_exceptions=True
+        )
+        
+        # Handle exceptions from parallel execution
+        if isinstance(natural_psc_candidates, Exception):
+            logger.error(f"Recursive search failed: {str(natural_psc_candidates)}")
+            raise natural_psc_candidates
+        
+        # Extract results from dict (new format returns dict with natural_psc_candidates and unresolved_companies)
+        if isinstance(natural_psc_candidates, dict):
+            natural_psc_list = natural_psc_candidates.get('natural_psc_candidates', [])
+            unresolved_companies = natural_psc_candidates.get('unresolved_companies', [])
+        else:
+            # Backward compatibility: if it's still a list, convert it
+            natural_psc_list = natural_psc_candidates if isinstance(natural_psc_candidates, list) else []
+            unresolved_companies = []
+        
+        # Extract additional agent result
+        additional_agent_result = None
+        additional_agent_success = False
+        
+        if additional_agent_response and not isinstance(additional_agent_response, Exception):
+            if additional_agent_response.success:
+                additional_agent_result = additional_agent_response.content
+                additional_agent_success = True
+                logger.info(f"Additional agent call successful. Response length: {len(additional_agent_result) if additional_agent_result else 0} chars")
+            else:
+                logger.warning(f"Additional agent call failed: {additional_agent_response.error}")
+        elif isinstance(additional_agent_response, Exception):
+            logger.error(f"Additional agent call raised exception: {str(additional_agent_response)}")
+        
+        logger.info("=" * 80)
+        logger.info("RECURSIVE NATURAL PSC SEARCH COMPLETED")
+        logger.info(f"Total Natural PSC Found: {len(natural_psc_list)}")
+        logger.info(f"Natural Persons: {[c.candidate for c in natural_psc_list]}")
+        logger.info(f"Unresolved Companies: {len(unresolved_companies)}")
+        logger.info(f"Unresolved Companies List: {unresolved_companies}")
+        logger.info(f"Additional Agent Success: {additional_agent_success}")
+        logger.info("=" * 80)
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        return RecursiveNaturalPSCSearchResponse(
+            success=True,
+            natural_psc_candidates=natural_psc_list,
+            unresolved_companies=unresolved_companies,
+            total_processed=len(natural_psc_list),  # This represents all candidates processed through recursion
+            total_found=len(natural_psc_list),
+            additional_agent_result=additional_agent_result,
+            additional_agent_success=additional_agent_success,
+            processing_time_ms=processing_time
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to perform recursive natural PSC search: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        processing_time = int((time.time() - start_time) * 1000)
+        return RecursiveNaturalPSCSearchResponse(
+            success=False,
+            error=str(e),
+            processing_time_ms=processing_time
+        )
+
+@router.post("/uk-psc-search", response_model=UKPSCSearchResponse)
+async def uk_psc_search(request: UKPSCSearchRequest):
+    """Search for UK company and find natural person PSC with recursive lookup (max 3 iterations)"""
+    import json
+    import time
+    from services.companies_house_service import CompaniesHouseService
+    from services.lyzr_service import LyzrAgentService
+    from utils.settings import settings
+    
+    start_time = time.time()
+    max_iterations = 3
+    
+    try:
+        # Initialize services
+        companies_house_service = CompaniesHouseService()
+        lyzr_service = LyzrAgentService()
+        
+        # Get agent configuration
+        agent_id = settings.agent_psc_natural_person
+        session_id = settings.session_psc_natural_person
+        
+        if not agent_id or not session_id:
+            raise HTTPException(
+                status_code=500,
+                detail="PSC natural person verification agent not configured. Please set AGENT_PSC_NATURAL_PERSON and SESSION_PSC_NATURAL_PERSON in .env"
+            )
+        
+        if not companies_house_service.api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="Companies House API key not configured. Please set COMPANIES_HOUSE_API_KEY in .env"
+            )
+        
+        logger.info(f"Starting UK PSC search for: {request.company_name}")
+        
+        current_company_name = request.company_name
+        iteration = 0
+        last_psc_info = None  # Track last PSC found
+        last_company_number = None  # Track last company number
+        last_lyzr_input = None  # Track last Lyzr input message
+        last_lyzr_response = None  # Track last Lyzr response
+        
+        while iteration < max_iterations:
+            iteration += 1
+            logger.info(f"Iteration {iteration}: Searching for company: {current_company_name}")
+            
+            # Step 1: Search for company
+            search_result = await companies_house_service.search_company(current_company_name)
+            
+            if not search_result.get("success") or not search_result.get("items"):
+                error_msg = search_result.get("error", "No companies found")
+                logger.error(f"Company search failed: {error_msg}")
+                processing_time = int((time.time() - start_time) * 1000)
+                return UKPSCSearchResponse(
+                    success=False,
+                    error=f"Company search failed: {error_msg}",
+                    processing_time_ms=processing_time,
+                    iterations=iteration
+                )
+            
+            # Get first company's company_number
+            first_company = search_result["items"][0]
+            company_number = first_company.get("company_number")
+            
+            if not company_number:
+                error_msg = "No company number found in search results"
+                logger.error(error_msg)
+                processing_time = int((time.time() - start_time) * 1000)
+                return UKPSCSearchResponse(
+                    success=False,
+                    error=error_msg,
+                    processing_time_ms=processing_time,
+                    iterations=iteration
+                )
+            
+            logger.info(f"Found company number: {company_number}")
+            
+            # Step 2: Get PSC for this company
+            psc_result = await companies_house_service.get_psc(company_number)
+            
+            if not psc_result.get("success") or not psc_result.get("items"):
+                error_msg = psc_result.get("error", "No PSC found")
+                logger.error(f"PSC lookup failed: {error_msg}")
+                processing_time = int((time.time() - start_time) * 1000)
+                return UKPSCSearchResponse(
+                    success=False,
+                    error=f"PSC lookup failed: {error_msg}",
+                    processing_time_ms=processing_time,
+                    iterations=iteration
+                )
+            
+            # Get first PSC item
+            first_psc = psc_result["items"][0]
+            psc_info = companies_house_service.extract_psc_info(first_psc)
+            
+            # Store this as the last PSC found (in case we reach max iterations)
+            last_psc_info = psc_info
+            last_company_number = company_number
+            
+            logger.info(f"Found PSC: {psc_info.get('name')}, kind: {psc_info.get('kind')}")
+            
+            # Step 3: Check if it's a natural person using Lyzr agent
+            # Build message for Lyzr agent
+            message_data = {
+                "Company_name": current_company_name,
+                "Name": psc_info.get("name", ""),
+                "identification": psc_info.get("identification", {}),
+                "kind": psc_info.get("kind", ""),  # Add PSC kind to help agent determine
+                "company_number": company_number  # Add company number for context
+            }
+            message = json.dumps(message_data, indent=2)
+            
+            logger.info(f"Checking if PSC is natural person: {psc_info.get('name')}")
+            logger.info(f"Lyzr agent input message: {message}")
+            
+            lyzr_response = await lyzr_service.call_custom_agent(
+                agent_id=agent_id,
+                session_id=session_id,
+                message=message,
+                timeout=60
+            )
+            
+            # Store Lyzr response for debugging
+            lyzr_response_content = lyzr_response.content if lyzr_response.success else None
+            last_lyzr_input = message
+            last_lyzr_response = lyzr_response_content
+            
+            if not lyzr_response.success:
+                error_msg = lyzr_response.error or "Lyzr agent call failed"
+                logger.error(f"Natural person verification failed: {error_msg}")
+                processing_time = int((time.time() - start_time) * 1000)
+                return UKPSCSearchResponse(
+                    success=False,
+                    error=f"Natural person verification failed: {error_msg}",
+                    processing_time_ms=processing_time,
+                    iterations=iteration,
+                    lyzr_input_message=message,
+                    lyzr_response=lyzr_response_content
+                )
+            
+            # Parse Lyzr response to check if it's a natural person
+            natural_psc = False
+            try:
+                # Try to parse JSON response
+                content = lyzr_response.content.strip()
+                
+                # Remove markdown code blocks if present
+                if content.startswith("```"):
+                    lines = content.split("\n")
+                    json_start = None
+                    json_end = None
+                    for i, line in enumerate(lines):
+                        if line.strip().startswith("```") and json_start is None:
+                            json_start = i + 1
+                        elif line.strip().startswith("```") and json_start is not None:
+                            json_end = i
+                            break
+                    if json_start is not None and json_end is not None:
+                        content = "\n".join(lines[json_start:json_end])
+                
+                parsed_response = json.loads(content)
+                natural_psc = parsed_response.get("natural_psc", False)
+                
+                logger.info(f"Natural person check result: {natural_psc}")
+                logger.info(f"Lyzr agent response: {lyzr_response.content[:500]}")
+                
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(f"Failed to parse Lyzr response: {str(e)}")
+                logger.warning(f"Raw response: {lyzr_response.content[:500]}")
+                # If we can't parse, check if it's already a natural person based on kind
+                if psc_info.get("kind") == "individual-person-with-significant-control":
+                    natural_psc = True
+                    logger.info("Assuming natural person based on PSC kind")
+                else:
+                    natural_psc = False
+            
+            # If it's a natural person, return the result
+            if natural_psc:
+                logger.info(f"Found natural person PSC: {psc_info.get('name')}")
+                processing_time = int((time.time() - start_time) * 1000)
+                
+                # Use identification already extracted from PSC info
+                identification = psc_info.get("identification", {})
+                
+                return UKPSCSearchResponse(
+                    success=True,
+                    natural_psc=NaturalPSCResult(
+                        name=psc_info.get("name", ""),
+                        identification=identification,
+                        address=psc_info.get("address", {}),
+                        age=psc_info.get("age"),
+                        nationality=psc_info.get("nationality"),
+                        country_of_residence=psc_info.get("country_of_residence"),
+                        natures_of_control=psc_info.get("natures_of_control", []),
+                        company_number=company_number,
+                        iteration=iteration
+                    ),
+                    processing_time_ms=processing_time,
+                    iterations=iteration,
+                    lyzr_input_message=message,
+                    lyzr_response=lyzr_response_content
+                )
+            
+            # If not natural, check if it's a corporate entity and continue search
+            # Check for various corporate entity types
+            psc_kind = psc_info.get("kind", "")
+            is_corporate_entity = (
+                psc_kind == "corporate-entity-person-with-significant-control" or
+                psc_kind == "corporate-entity-beneficial-owner" or
+                psc_kind.startswith("corporate-entity")
+            )
+            
+            if is_corporate_entity:
+                # For corporate entities, use the name field as the company name
+                company_name = psc_info.get("company_name") or psc_info.get("name", "")
+                if company_name:
+                    logger.info(f"PSC is corporate entity (kind: {psc_kind}): {company_name}. Continuing search...")
+                    current_company_name = company_name.strip()
+                    continue
+                else:
+                    # No company name available, return the last PSC found
+                    logger.warning("Corporate entity PSC found but no company name available. Returning last PSC found.")
+                    processing_time = int((time.time() - start_time) * 1000)
+                    identification = last_psc_info.get("identification", {}) if last_psc_info else {}
+                    return UKPSCSearchResponse(
+                        success=True,
+                        natural_psc=NaturalPSCResult(
+                            name=last_psc_info.get("name", "") if last_psc_info else "",
+                            identification=identification,
+                            address=last_psc_info.get("address", {}) if last_psc_info else {},
+                            age=last_psc_info.get("age") if last_psc_info else None,  # Age is optional
+                            nationality=last_psc_info.get("nationality") if last_psc_info else None,
+                            country_of_residence=last_psc_info.get("country_of_residence") if last_psc_info else None,
+                            natures_of_control=last_psc_info.get("natures_of_control", []) if last_psc_info else [],
+                            company_number=last_company_number,
+                            iteration=iteration
+                        ),
+                        processing_time_ms=processing_time,
+                        iterations=iteration,
+                        lyzr_input_message=last_lyzr_input,
+                        lyzr_response=last_lyzr_response
+                    )
+            else:
+                # Unknown PSC type or not a corporate entity - return the last PSC found
+                logger.warning(f"PSC is not a natural person and not a corporate entity (kind: {psc_kind}). Returning last PSC found.")
+                processing_time = int((time.time() - start_time) * 1000)
+                identification = last_psc_info.get("identification", {}) if last_psc_info else {}
+                return UKPSCSearchResponse(
+                    success=True,
+                    natural_psc=NaturalPSCResult(
+                        name=last_psc_info.get("name", "") if last_psc_info else "",
+                        identification=identification,
+                        address=last_psc_info.get("address", {}) if last_psc_info else {},
+                        age=last_psc_info.get("age") if last_psc_info else None,  # Age is optional
+                        nationality=last_psc_info.get("nationality") if last_psc_info else None,
+                        country_of_residence=last_psc_info.get("country_of_residence") if last_psc_info else None,
+                        natures_of_control=last_psc_info.get("natures_of_control", []) if last_psc_info else [],
+                        company_number=last_company_number,
+                        iteration=iteration
+                    ),
+                    processing_time_ms=processing_time,
+                    iterations=iteration,
+                    lyzr_input_message=last_lyzr_input,
+                    lyzr_response=last_lyzr_response
+                )
+        
+        # Max iterations reached - return the last PSC found
+        if last_psc_info:
+            logger.warning(f"Maximum iterations ({max_iterations}) reached without finding natural person PSC. Returning last PSC found.")
+            processing_time = int((time.time() - start_time) * 1000)
+            identification = last_psc_info.get("identification", {})
+            return UKPSCSearchResponse(
+                success=True,
+                natural_psc=NaturalPSCResult(
+                    name=last_psc_info.get("name", ""),
+                    identification=identification,
+                    address=last_psc_info.get("address", {}),
+                    age=last_psc_info.get("age"),  # Age is optional (may be None for non-natural persons)
+                    nationality=last_psc_info.get("nationality"),
+                    country_of_residence=last_psc_info.get("country_of_residence"),
+                    natures_of_control=last_psc_info.get("natures_of_control", []),
+                    company_number=last_company_number,
+                    iteration=iteration
+                ),
+                processing_time_ms=processing_time,
+                iterations=iteration,
+                lyzr_input_message=message if 'message' in locals() else None,
+                lyzr_response=lyzr_response_content if 'lyzr_response_content' in locals() else None
+            )
+        else:
+            # No PSC found at all
+            error_msg = f"Maximum iterations ({max_iterations}) reached without finding any PSC"
+            logger.error(error_msg)
+            processing_time = int((time.time() - start_time) * 1000)
+            return UKPSCSearchResponse(
+                success=False,
+                error=error_msg,
+                processing_time_ms=processing_time,
+                iterations=iteration
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to search UK PSC: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        processing_time = int((time.time() - start_time) * 1000)
+        return UKPSCSearchResponse(
+            success=False,
+            error=str(e),
+            processing_time_ms=processing_time,
+            iterations=0
+        )
 
 @router.get("/health", response_model=HealthCheck)
 async def health_check():

@@ -74,3 +74,4 @@ The `.env` file is automatically loaded. Make sure it contains:
 - **API Docs**: http://localhost:8000/docs
 - **MongoDB**: localhost:27017
 
+

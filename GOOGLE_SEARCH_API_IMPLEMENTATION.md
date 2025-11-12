@@ -365,3 +365,4 @@ curl -X GET "https://www.searchapi.io/api/v1/search?engine=google&q=Company+Name
 - `SEARCHAPI_INTEGRATION_EXAMPLE.md` - Integration examples
 - `searchapi_test_commands.sh` - Test commands
 - `test_searchapi_integration.py` - Integration tests
+
